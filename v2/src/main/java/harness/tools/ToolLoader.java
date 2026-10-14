@@ -12,6 +12,8 @@ import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.TreeMap;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.Function;
 import java.util.regex.Pattern;
 
@@ -23,6 +25,27 @@ import java.util.regex.Pattern;
 public class ToolLoader {
 
     private static final ObjectMapper JSON = new ObjectMapper();
+
+    /**
+     * How many times each lookup handler ran in this process, by tool name. The run and
+     * resume footers print it, so a call that ran twice around a crash is visible.
+     */
+    public static final Map<String, Integer> HANDLER_CALLS = new ConcurrentHashMap<>();
+
+    /** "order_status=2, stock_status=1" in name order, or "none". */
+    public static String handlerCalls() {
+        if (HANDLER_CALLS.isEmpty()) {
+            return "none";
+        }
+        StringBuilder out = new StringBuilder();
+        for (Map.Entry<String, Integer> entry : new TreeMap<>(HANDLER_CALLS).entrySet()) {
+            if (!out.isEmpty()) {
+                out.append(", ");
+            }
+            out.append(entry.getKey()).append('=').append(entry.getValue());
+        }
+        return out.toString();
+    }
 
     /** Every *.json in the folder, as one registry. */
     public static ToolRegistry load(Path dir) {
@@ -43,7 +66,7 @@ public class ToolLoader {
 
         Function<Map<String, String>, String> handler;
         if (type.equals("lookup")) {
-            handler = lookup(node, inputField, file);
+            handler = lookup(node, name, inputField, file);
         } else if (type.equals("sleep")) {
             handler = sleep(required(node, "ms", file).asLong());
         } else if (type.equals("fail")) {
@@ -65,7 +88,7 @@ public class ToolLoader {
         return new MatchingCondition(keywords, idPattern);
     }
 
-    private static Function<Map<String, String>, String> lookup(JsonNode node, String inputField, Path file) {
+    private static Function<Map<String, String>, String> lookup(JsonNode node, String name, String inputField, Path file) {
         Map<String, String> data = new HashMap<>();
         for (Map.Entry<String, JsonNode> entry : required(node, "data", file).properties()) {
             data.put(entry.getKey(), entry.getValue().asText());
@@ -73,6 +96,7 @@ public class ToolLoader {
         String found = required(node, "found", file).asText();
         String notFound = required(node, "notFound", file).asText();
         return input -> {
+            HANDLER_CALLS.merge(name, 1, Integer::sum);
             String id = input.getOrDefault(inputField, "");
             String value = data.get(id);
             if (value == null) {

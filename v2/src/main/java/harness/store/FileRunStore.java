@@ -68,6 +68,16 @@ public class FileRunStore implements RunStore {
         return dir.resolve(runId + ".jsonl");
     }
 
+    /** The agent named on the start line: resume needs it to rebuild the same orchestrator. */
+    public String agent(String runId) {
+        requireRun(runId);
+        try {
+            return JSON.readTree(Files.readAllLines(file(runId)).get(0)).path("agent").asText();
+        } catch (IOException e) {
+            throw new UncheckedIOException("cannot read " + file(runId), e);
+        }
+    }
+
     private void write(String runId, Object line, StandardOpenOption how) {
         try {
             Files.createDirectories(dir);
