@@ -2,11 +2,13 @@ package harness.cli;
 
 import harness.agent.Agent;
 import harness.agent.AgentLoader;
+import harness.core.ConsoleListener;
 import harness.core.Orchestrator;
 import harness.core.RelaySummarizer;
 import harness.core.Span;
 import harness.core.Turn;
 import harness.model.RuleBasedLLM;
+import harness.store.FileRunStore;
 import harness.tools.Tool;
 import harness.tools.ToolCaller;
 import harness.tools.ToolLoader;
@@ -17,13 +19,15 @@ import java.util.Arrays;
 import java.util.List;
 
 /**
- * Command line, run from v2/: agents · tools · run --agent X "question" ["question" ...].
- * Args are parsed by hand. Agents and tools are read from agents/ and tools/.
+ * Command line, run from v2/: agents · tools · run --agent X "question" ["question" ...] ·
+ * replay runId [fromStep]. Args are parsed by hand. Agents and tools are read from
+ * agents/ and tools/; every run is logged to runs/.
  */
 public class Main {
 
     static final Path AGENTS = Path.of("agents");
     static final Path TOOLS = Path.of("tools");
+    static final Path RUNS = Path.of("runs");
 
     public static void main(String[] args) {
         if (args.length == 0) {
@@ -34,6 +38,7 @@ public class Main {
             case "agents" -> agents();
             case "tools" -> tools();
             case "run" -> run(rest);
+            case "replay" -> replay(rest);
             default -> usage();
         }
     }
@@ -54,6 +59,7 @@ public class Main {
         }
     }
 
+    /** Runs the questions as one conversation, printing each row as it lands, then the answer. */
     static void run(List<String> args) {
         String agentName = null;
         List<String> questions = new ArrayList<>();
@@ -82,8 +88,9 @@ public class Main {
         }
 
         ToolRegistry registry = ToolLoader.load(TOOLS);
-        Orchestrator orchestrator = new Orchestrator(
-                agent, registry, new RuleBasedLLM(), new ToolCaller(registry), new RelaySummarizer());
+        FileRunStore store = new FileRunStore(RUNS);
+        Orchestrator orchestrator = new Orchestrator(agent, registry, new RuleBasedLLM(),
+                new ToolCaller(registry), new RelaySummarizer(), store, new ConsoleListener());
 
         long started = System.nanoTime();
         int passes = 0;
@@ -92,7 +99,6 @@ public class Main {
             String answer = orchestrator.run(question);
             Turn turn = orchestrator.conversation().turns().getLast();
             for (Span span : turn.spans()) {
-                System.out.println(format(span));
                 if (span.kind() == Span.Kind.LLM) {
                     passes++;
                 }
@@ -103,19 +109,36 @@ public class Main {
             System.out.println("answer: " + answer);
         }
         long ms = (System.nanoTime() - started) / 1_000_000;
-        System.out.printf("run %s · %d passes · %d tool calls · %d ms%n",
-                orchestrator.conversation().id(), passes, toolCalls, ms);
+        String runId = orchestrator.conversation().id();
+        System.out.printf("run %s · %d passes · %d tool calls · %d ms · %s%n",
+                runId, passes, toolCalls, ms, store.file(runId));
     }
 
-    /** One row, one line: step, kind, request -> response, then status and time. */
-    static String format(Span span) {
-        String tail = span.response().isEmpty() ? "" : " -> " + span.response();
-        return String.format("%3d  %-4s  %s%s  [%s %d ms]",
-                span.step(), span.kind(), span.request(), tail, span.status(), span.ms());
+    /** Prints the stored rows of a run from the given step on (default: from the first). */
+    static void replay(List<String> args) {
+        if (args.isEmpty() || args.size() > 2) {
+            fail("usage: replay <runId> [fromStep]");
+        }
+        String runId = args.get(0);
+        int fromStep = 1;
+        if (args.size() == 2) {
+            try {
+                fromStep = Integer.parseInt(args.get(1));
+            } catch (NumberFormatException e) {
+                fail("fromStep must be a number, got " + args.get(1));
+            }
+        }
+        FileRunStore store = new FileRunStore(RUNS);
+        if (!store.exists(runId)) {
+            fail("no run " + runId + " in " + RUNS + "/");
+        }
+        for (Span span : store.load(runId, fromStep)) {
+            System.out.println(ConsoleListener.format(span));
+        }
     }
 
     static void usage() {
-        fail("usage: agents | tools | run --agent <name> \"question\" [\"question\" ...]");
+        fail("usage: agents | tools | run --agent <name> \"question\" [\"question\" ...] | replay <runId> [fromStep]");
     }
 
     static void fail(String message) {
