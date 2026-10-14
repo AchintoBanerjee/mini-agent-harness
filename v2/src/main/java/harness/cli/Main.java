@@ -17,6 +17,7 @@ import harness.tools.ToolLoader;
 import harness.tools.ToolRegistry;
 import harness.tools.ToolResult;
 import java.nio.file.Path;
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
@@ -26,7 +27,8 @@ import java.util.List;
  * [--crash-after N] [--crash-before-persist] · resume runId · replay runId [fromStep].
  * Args are parsed by hand. Agents and tools are read from agents/ and tools/; every run
  * is logged to runs/. The two crash flags simulate a process dying mid-run so that
- * resume has something to pick up.
+ * resume has something to pick up. Tool calls are gated by the agent: only its listed
+ * tools run, each within its toolTimeoutMs.
  */
 public class Main {
 
@@ -94,7 +96,7 @@ public class Main {
         ToolRegistry registry = ToolLoader.load(TOOLS);
         FileRunStore store = new FileRunStore(RUNS);
         RunListener listener = crashAfter > 0 ? crashAfter(crashAfter) : new ConsoleListener();
-        ToolCaller toolCaller = crashBeforePersist ? crashBeforePersist(registry) : new ToolCaller(registry);
+        ToolCaller toolCaller = crashBeforePersist ? crashBeforePersist(registry, agent) : toolCaller(registry, agent);
         Orchestrator orchestrator = new Orchestrator(agent, registry, new RuleBasedLLM(),
                 toolCaller, new RelaySummarizer(), store, listener);
 
@@ -118,7 +120,7 @@ public class Main {
         Agent agent = findAgent(store.agent(runId));
         ToolRegistry registry = ToolLoader.load(TOOLS);
         Orchestrator orchestrator = new Orchestrator(agent, registry, new RuleBasedLLM(),
-                new ToolCaller(registry), new RelaySummarizer(), store, new ConsoleListener());
+                toolCaller(registry, agent), new RelaySummarizer(), store, new ConsoleListener());
 
         long started = System.nanoTime();
         System.out.println("answer: " + orchestrator.resume(runId));
@@ -154,9 +156,14 @@ public class Main {
         };
     }
 
+    /** The agent's tool list and per-call timeout gate every call. */
+    static ToolCaller toolCaller(ToolRegistry registry, Agent agent) {
+        return new ToolCaller(registry, agent.toolNames(), Duration.ofMillis(agent.toolTimeoutMs()));
+    }
+
     /** Simulated crash in the at-least-once window: the tool did its work, its TOOL row never lands. */
-    static ToolCaller crashBeforePersist(ToolRegistry registry) {
-        return new ToolCaller(registry) {
+    static ToolCaller crashBeforePersist(ToolRegistry registry, Agent agent) {
+        return new ToolCaller(registry, agent.toolNames(), Duration.ofMillis(agent.toolTimeoutMs())) {
             @Override
             public ToolResult call(ToolCall call) {
                 ToolResult result = super.call(call);

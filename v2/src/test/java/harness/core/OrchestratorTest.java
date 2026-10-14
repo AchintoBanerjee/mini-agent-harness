@@ -2,9 +2,11 @@ package harness.core;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import harness.agent.Agent;
 import harness.agent.AgentLoader;
+import harness.model.Done;
 import harness.model.LLMProxy;
 import harness.model.RuleBasedLLM;
 import harness.model.ToolCall;
@@ -12,6 +14,7 @@ import harness.tools.ToolCaller;
 import harness.tools.ToolLoader;
 import harness.tools.ToolRegistry;
 import java.nio.file.Path;
+import java.time.Duration;
 import java.util.List;
 import java.util.Map;
 import org.junit.jupiter.api.Test;
@@ -115,5 +118,54 @@ class OrchestratorTest {
         assertEquals(Span.Status.CUT_SHORT, note.status());
         assertEquals("cut short at maxPasses=2", note.request());
         assertEquals("Order ORD-1: SHIPPED, shipment SHP-1", answer);
+    }
+
+    @Test
+    void theLoopSurvivesAHangAndTheAnswerNamesTheCutOff() {
+        Agent chaos = AgentLoader.load(Path.of("agents", "chaos.json"));
+        ToolCaller impatient = new ToolCaller(registry, chaos.toolNames(), Duration.ofMillis(300));
+        Orchestrator orchestrator = new Orchestrator(chaos, registry, new RuleBasedLLM(), impatient, new RelaySummarizer());
+        long started = System.nanoTime();
+
+        String answer = orchestrator.run("Please hang while checking ORD-1");
+
+        long elapsed = (System.nanoTime() - started) / 1_000_000;
+        assertEquals("Tool hang_forever TIMEOUT: cut off after 300 ms", answer);
+        List<Span> rows = orchestrator.conversation().turns().get(0).spans();
+        assertEquals(List.of(Span.Kind.LLM, Span.Kind.TOOL, Span.Kind.LLM), rows.stream().map(Span::kind).toList(),
+                "two passes, well under maxPasses=" + chaos.maxPasses() + ", no CUT_SHORT");
+        assertEquals(Span.Status.TIMEOUT, rows.get(1).status());
+        assertTrue(rows.get(1).ms() >= 250 && rows.get(1).ms() < 600, "the TOOL row carries the wait: " + rows.get(1).ms() + " ms");
+        assertTrue(elapsed < 600, "the whole turn took " + elapsed + " ms");
+    }
+
+    @Test
+    void theLoopSurvivesAThrowingToolAndTheAnswerNamesTheError() {
+        Agent chaos = AgentLoader.load(Path.of("agents", "chaos.json"));
+        Orchestrator orchestrator = new Orchestrator(chaos, registry, new RuleBasedLLM(),
+                new ToolCaller(registry, chaos.toolNames(), Duration.ofSeconds(1)), new RelaySummarizer());
+
+        String answer = orchestrator.run("boom");
+
+        assertEquals("Tool throw_boom ERROR: Tool failed: boom", answer);
+        List<Span> rows = orchestrator.conversation().turns().get(0).spans();
+        assertEquals(List.of(Span.Kind.LLM, Span.Kind.TOOL, Span.Kind.LLM), rows.stream().map(Span::kind).toList());
+        assertEquals(Span.Status.ERROR, rows.get(1).status());
+    }
+
+    @Test
+    void aModelThatNamesAToolOutsideTheAgentsListIsDeniedAndTheLoopMovesOn() {
+        LLMProxy rogue = (context, tools) -> context.spans().isEmpty()
+                ? new ToolCall("refund_order", Map.of("orderId", "ORD-1"))
+                : new Done();
+        Orchestrator orchestrator = new Orchestrator(agent, registry, rogue,
+                new ToolCaller(registry, agent.toolNames(), Duration.ofSeconds(1)), new RelaySummarizer());
+
+        String answer = orchestrator.run("refund order ORD-1");
+
+        assertEquals("Tool refund_order DENIED: not in this agent's tool list", answer);
+        List<Span> rows = orchestrator.conversation().turns().get(0).spans();
+        assertEquals(List.of(Span.Kind.LLM, Span.Kind.TOOL, Span.Kind.LLM), rows.stream().map(Span::kind).toList());
+        assertEquals(Span.Status.DENIED, rows.get(1).status());
     }
 }

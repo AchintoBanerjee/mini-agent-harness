@@ -1,16 +1,22 @@
 package harness.tools;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import harness.core.Span;
 import harness.model.ToolCall;
 import java.nio.file.Path;
+import java.time.Duration;
+import java.util.List;
 import java.util.Map;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 import org.junit.jupiter.api.Test;
 
 class ToolCallerTest {
 
-    private final ToolCaller caller = new ToolCaller(ToolLoader.load(Path.of("tools")));
+    private final ToolRegistry registry = ToolLoader.load(Path.of("tools"));
+    private final ToolCaller caller = new ToolCaller(registry);
 
     @Test
     void runsTheNamedTool() {
@@ -42,5 +48,65 @@ class ToolCallerTest {
 
         assertEquals(Span.Status.ERROR, result.status());
         assertEquals("Tool failed: boom", result.output());
+    }
+
+    @Test
+    void aToolThatThrowsAnErrorNotAnExceptionIsStillAnErrorResult() {
+        ToolRegistry one = new ToolRegistry();
+        one.register(new Tool("asserting", "throws an Error", "x", null, new MatchingCondition(List.of(), null), input -> {
+            throw new AssertionError("not even an exception");
+        }));
+
+        ToolResult result = new ToolCaller(one).call(new ToolCall("asserting", Map.of()));
+
+        assertEquals(Span.Status.ERROR, result.status());
+        assertEquals("Tool failed: not even an exception", result.output());
+    }
+
+    @Test
+    void aRegisteredToolNotOnTheAgentsListIsDeniedWithoutRunning() {
+        ToolCaller support = new ToolCaller(registry, List.of("order_status", "shipping_status", "stock_status"), Duration.ofSeconds(2));
+        int before = ToolLoader.HANDLER_CALLS.getOrDefault("refund_order", 0);
+
+        ToolResult result = support.call(new ToolCall("refund_order", Map.of("orderId", "ORD-1")));
+
+        assertEquals(Span.Status.DENIED, result.status());
+        assertEquals("not in this agent's tool list", result.output());
+        assertEquals(before, ToolLoader.HANDLER_CALLS.getOrDefault("refund_order", 0), "the handler never ran");
+    }
+
+    @Test
+    void aHangingToolIsCutOffAtTheTimeoutAndTheCallerStaysUsable() {
+        ToolCaller impatient = new ToolCaller(registry, List.of("hang_forever", "order_status"), Duration.ofMillis(300));
+        long started = System.nanoTime();
+
+        ToolResult result = impatient.call(new ToolCall("hang_forever", Map.of("orderId", "ORD-1")));
+
+        long elapsed = (System.nanoTime() - started) / 1_000_000;
+        assertEquals(Span.Status.TIMEOUT, result.status());
+        assertEquals("cut off after 300 ms", result.output());
+        assertTrue(elapsed < 600, "took " + elapsed + " ms: the timeout is 300 ms, plus 300 ms slack");
+        ToolResult next = impatient.call(new ToolCall("order_status", Map.of("orderId", "ORD-1")));
+        assertEquals("Order ORD-1: SHIPPED, shipment SHP-1", next.output(), "the executor outlives the cut-off call");
+    }
+
+    @Test
+    void theCutOffToolIsInterruptedNotLeftRunning() throws InterruptedException {
+        CountDownLatch interrupted = new CountDownLatch(1);
+        ToolRegistry one = new ToolRegistry();
+        one.register(new Tool("stuck", "sleeps until interrupted", "x", null, new MatchingCondition(List.of(), null), input -> {
+            try {
+                Thread.sleep(60_000);
+            } catch (InterruptedException e) {
+                interrupted.countDown();
+                throw new IllegalStateException("interrupted");
+            }
+            return "never";
+        }));
+        ToolCaller impatient = new ToolCaller(one, List.of("stuck"), Duration.ofMillis(300));
+
+        assertEquals(Span.Status.TIMEOUT, impatient.call(new ToolCall("stuck", Map.of())).status());
+
+        assertTrue(interrupted.await(300, TimeUnit.MILLISECONDS), "cancel(true) must interrupt the tool's thread");
     }
 }
