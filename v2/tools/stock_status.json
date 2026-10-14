@@ -1,0 +1,4 @@
+{ "name": "stock_status", "description": "Units in stock for a product, by product id", "type": "lookup",
+  "inputField": "productId", "match": { "keywords": ["stock", "inventory", "available"], "idPattern": "PRD-\\d+" },
+  "data": { "PRD-1": "42 units in stock", "PRD-2": "OUT OF STOCK" },
+  "found": "Product {id}: {value}", "notFound": "Product {id} not found" }

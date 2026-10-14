@@ -1,0 +1,2 @@
+{ "name": "inventory", "description": "Answers stock questions only",
+  "tools": ["stock_status"], "maxPasses": 2, "toolTimeoutMs": 2000 }

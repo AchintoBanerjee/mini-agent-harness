@@ -1,0 +1,4 @@
+{ "name": "refund_order", "description": "Refunds an order, by order id (listed by no agent)", "type": "lookup",
+  "inputField": "orderId", "match": { "keywords": ["refund"], "idPattern": "ORD-\\d+" },
+  "data": { "ORD-1": "REFUNDED 12.00 USD", "ORD-3": "REFUNDED 30.00 USD" },
+  "found": "Order {id}: {value}", "notFound": "Order {id} not found" }

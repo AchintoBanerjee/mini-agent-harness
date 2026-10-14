@@ -1,0 +1,3 @@
+{ "name": "throw_boom", "description": "Throws on every call: the broken tool", "type": "fail",
+  "match": { "keywords": ["boom"] },
+  "message": "boom" }

@@ -1,0 +1,4 @@
+{ "name": "shipping_status", "description": "Status of a shipment, by shipment id", "type": "lookup",
+  "inputField": "shipmentId", "match": { "keywords": ["shipment", "shipping", "tracking"], "idPattern": "SHP-\\d+" },
+  "data": { "SHP-1": "IN TRANSIT, arriving 2026-10-16", "SHP-3": "DELIVERED on 2026-10-10" },
+  "found": "Shipment {id}: {value}", "notFound": "Shipment {id} not found" }

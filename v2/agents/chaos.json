@@ -1,0 +1,2 @@
+{ "name": "chaos", "description": "Runs misbehaving tools (a hang, a throw) next to a good one",
+  "tools": ["order_status", "hang_forever", "throw_boom"], "maxPasses": 5, "toolTimeoutMs": 1000 }

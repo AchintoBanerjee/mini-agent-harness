@@ -1,0 +1,4 @@
+{ "name": "order_status", "description": "Status of an order, by order id", "type": "lookup",
+  "inputField": "orderId", "match": { "keywords": ["order"], "idPattern": "ORD-\\d+" },
+  "data": { "ORD-1": "SHIPPED, shipment SHP-1", "ORD-2": "PROCESSING", "ORD-3": "DELIVERED, shipment SHP-3" },
+  "found": "Order {id}: {value}", "notFound": "Order {id} not found" }

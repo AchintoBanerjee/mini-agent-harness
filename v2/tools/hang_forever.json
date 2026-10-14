@@ -1,0 +1,3 @@
+{ "name": "hang_forever", "description": "Sleeps for a minute: the runaway tool", "type": "sleep",
+  "inputField": "orderId", "match": { "keywords": ["hang"], "idPattern": "ORD-\\d+" },
+  "ms": 60000 }
