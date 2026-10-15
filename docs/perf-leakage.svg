@@ -1,0 +1,22 @@
+<svg viewBox="0 0 1120 345" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:1120px;font-family:-apple-system,Segoe UI,Roboto,sans-serif;font-size:12px">
+<defs><marker id="ah" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#1a1f2b"/></marker><marker id="ahb" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#0f6cbd"/></marker></defs>
+<style>.b{fill:#fff;stroke:#1a1f2b;stroke-width:1.4;rx:8}.s{fill:#f1f0ec;stroke:#1a1f2b;stroke-width:1.2;rx:8}.o{fill:#eef1f5;stroke:#0f6cbd;stroke-width:1.6;rx:8}.mt{fill:#fbe6d2;stroke:#a85713;stroke-width:1.6;rx:8}.wx{fill:#f8e3e4;stroke:#b0222b;stroke-width:1.6;rx:8}.h{fill:#1a1f2b;font-weight:600}.m{fill:#5b6472;font-size:10px}.y{fill:#6b7280;font-size:9.5px;font-weight:700;letter-spacing:.08em}.rx{fill:#b0222b;font-size:10px;font-weight:600}.bx{fill:#0f6cbd;font-size:10px;font-weight:600}.l{stroke:#1a1f2b;stroke-width:1.3;marker-end:url(#ah)}.p{fill:none;stroke:#1a1f2b;stroke-width:1.3;marker-end:url(#ah)}.d{stroke:#0f6cbd;stroke-width:1.3;stroke-dasharray:5 4;marker-end:url(#ahb);fill:none}</style>
+<rect width="1120" height="345" fill="#fff"/>
+<text class="y" x="15" y="14">MULTI-AGENT LEAKAGE — A SIDE EFFECT OF THE BROADCAST PATTERNS · THE LIGHTER PATTERN HAS NONE</text>
+<text class="rx" x="15" y="42">GROUP CHAT / SUPERVISOR BROADCAST</text>
+<rect class="s" x="165" y="50" width="160" height="44"/><text class="h" x="245" y="68" text-anchor="middle">Supervisor</text><text class="m" x="245" y="84" text-anchor="middle">picks the next speaker, every round</text>
+<rect class="s" x="15" y="130" width="140" height="44"/><text class="h" x="85" y="148" text-anchor="middle">Agent A</text><text class="m" x="85" y="164" text-anchor="middle">orders</text>
+<rect class="s" x="175" y="130" width="140" height="44"/><text class="h" x="245" y="148" text-anchor="middle">Agent B</text><text class="m" x="245" y="164" text-anchor="middle">shipments</text>
+<rect class="s" x="335" y="130" width="140" height="44"/><text class="h" x="405" y="148" text-anchor="middle">Agent C</text><text class="m" x="405" y="164" text-anchor="middle">stock</text>
+<rect class="wx" x="15" y="210" width="460" height="56"/><text class="h" x="245" y="232" text-anchor="middle">one shared transcript</text><text class="m" x="245" y="248" text-anchor="middle">every agent reads every other agent's tool calls and reasoning · grows with every hop</text>
+<path class="p" d="M245,94 L245,112 L85,112 L85,128"/><path class="p" d="M245,94 L245,128"/><path class="p" d="M245,94 L245,112 L405,112 L405,128"/>
+<line class="l" x1="85" y1="174" x2="85" y2="208"/><line class="l" x1="245" y1="174" x2="245" y2="208"/><line class="l" x1="405" y1="174" x2="405" y2="208"/>
+<text class="m" x="15" y="290">Broadcast: about two model calls per hop and a transcript that grows with the square of the hops; a sibling's reasoning in your prompt is cost, and it can derail you.</text>
+<text class="bx" x="600" y="42">AGENT AS A TOOL</text>
+<rect class="o" x="600" y="50" width="200" height="56"/><text class="h" x="700" y="70" text-anchor="middle">Parent loop</text><text class="m" x="700" y="86" text-anchor="middle">its own tool choice is the router</text>
+<rect class="o" x="860" y="130" width="240" height="70"/><text class="h" x="980" y="152" text-anchor="middle">Child loop · shipments</text><text class="m" x="980" y="168" text-anchor="middle">sees the goal and its own tools</text><text class="m" x="980" y="182" text-anchor="middle">not the parent's history, not its siblings</text>
+<path class="p" d="M800,78 L980,78 L980,128"/><text class="m" x="810" y="70">the goal, and nothing else</text>
+<path class="p" d="M860,165 L700,165 L700,108"/><text class="m" x="706" y="190">the answer, and nothing else</text>
+<text class="m" x="15" y="306">Agent as a tool: one model call per hop, linear; answers cross, transcripts never do. This is what v2 implements.</text>
+<text class="m" x="15" y="328">Red = the shared transcript that leaks · blue = the lighter pattern.</text>
+</svg>

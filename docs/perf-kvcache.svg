@@ -1,0 +1,23 @@
+<svg viewBox="0 0 1120 380" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:1120px;font-family:-apple-system,Segoe UI,Roboto,sans-serif;font-size:12px">
+<defs><marker id="ah" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#1a1f2b"/></marker><marker id="ahb" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#0f6cbd"/></marker></defs>
+<style>.b{fill:#fff;stroke:#1a1f2b;stroke-width:1.4;rx:8}.s{fill:#f1f0ec;stroke:#1a1f2b;stroke-width:1.2;rx:8}.o{fill:#eef1f5;stroke:#0f6cbd;stroke-width:1.6;rx:8}.mt{fill:#fbe6d2;stroke:#a85713;stroke-width:1.6;rx:8}.wx{fill:#f8e3e4;stroke:#b0222b;stroke-width:1.6;rx:8}.h{fill:#1a1f2b;font-weight:600}.m{fill:#5b6472;font-size:10px}.y{fill:#6b7280;font-size:9.5px;font-weight:700;letter-spacing:.08em}.rx{fill:#b0222b;font-size:10px;font-weight:600}.bx{fill:#0f6cbd;font-size:10px;font-weight:600}.l{stroke:#1a1f2b;stroke-width:1.3;marker-end:url(#ah)}.p{fill:none;stroke:#1a1f2b;stroke-width:1.3;marker-end:url(#ah)}.d{stroke:#0f6cbd;stroke-width:1.3;stroke-dasharray:5 4;marker-end:url(#ahb);fill:none}</style>
+<rect width="1120" height="380" fill="#fff"/>
+<text class="y" x="15" y="14">THE PREFIX CACHE — THE MODEL REUSES THE LONGEST UNCHANGED PREFIX · ONE CHANGED TOKEN INVALIDATES EVERYTHING AFTER IT</text>
+<text class="rx" x="15" y="42">BEFORE — volatile first: zero cache hits, a full prefill every turn</text>
+<rect class="wx" x="15" y="50" width="400" height="44"/><text class="h" x="215" y="68" text-anchor="middle">per-turn block: memory, retrieved context</text><text class="m" x="215" y="84" text-anchor="middle">changes every turn → the first tokens change every turn</text>
+<rect class="s" x="15" y="102" width="400" height="44"/><text class="h" x="215" y="120" text-anchor="middle">tool definitions</text><text class="m" x="215" y="136" text-anchor="middle">injected mid-prompt, order not deterministic</text>
+<rect class="s" x="15" y="154" width="400" height="44"/><text class="h" x="215" y="172" text-anchor="middle">history</text><text class="m" x="215" y="188" text-anchor="middle">as it happened</text>
+<rect class="s" x="15" y="206" width="400" height="44"/><text class="h" x="215" y="224" text-anchor="middle">system prompt</text><text class="m" x="215" y="240" text-anchor="middle">the stable part, at the bottom</text>
+<text class="m" x="15" y="272">Before: the model reads the whole prompt again on every call; by turn 16 a 10x prompt, most of it the same text as last turn.</text>
+<text class="bx" x="600" y="42">AFTER — stable to volatile, append only: the prefix is reused</text>
+<rect class="o" x="600" y="50" width="400" height="44"/><text class="h" x="800" y="68" text-anchor="middle">system prompt</text><text class="m" x="800" y="84" text-anchor="middle">never changes</text>
+<rect class="o" x="600" y="102" width="400" height="44"/><text class="h" x="800" y="120" text-anchor="middle">tool definitions, fixed order</text><text class="m" x="800" y="136" text-anchor="middle">never changes within a conversation</text>
+<rect class="o" x="600" y="154" width="400" height="44"/><text class="h" x="800" y="172" text-anchor="middle">history as it happened</text><text class="m" x="800" y="188" text-anchor="middle">only ever appended · a repeat is a reference, not a copy</text>
+<rect class="b" x="600" y="206" width="400" height="44"/><text class="h" x="800" y="224" text-anchor="middle">the new turn</text><text class="m" x="800" y="240" text-anchor="middle">the only part the model has not seen</text>
+<path d="M1012,50 L1024,50 L1024,198 L1012,198" fill="none" stroke="#0f6cbd" stroke-width="1.6"/><text class="bx" x="1032" y="110">cached</text><text class="bx" x="1032" y="124">prefix</text>
+<path d="M1012,206 L1024,206 L1024,250 L1012,250" fill="none" stroke="#1a1f2b" stroke-width="1.3"/><text class="m" x="1032" y="232">new tokens</text>
+<text class="m" x="15" y="288">After: prefill is about half the turn on a big prompt; a prefix hit skips it, and cached tokens are billed at a fraction, or freed capacity on your own GPU.</text>
+<text class="m" x="15" y="322">Measure it: tokens per turn and latency per turn over one recorded conversation. A rising line is the harness; a flat line is the model. Cached-token counts reported next to cost, and checked in the eval on every change.</text>
+<text class="m" x="15" y="338">Compaction, when the budget overflows, rewrites the window on purpose: one paid cache miss at that point, instead of churning the prefix on every turn.</text>
+<text class="m" x="15" y="360">Red = the shape that cannot hit the cache · blue = the shape that does · white = the only new tokens of the turn.</text>
+</svg>

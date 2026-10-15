@@ -1,6 +1,6 @@
 # Scaling and performance
 
-[Scaling the orchestrator pods, CPU](#scaling-the-orchestrator-pods-cpu) · [Scaling the persistent connection](#scaling-the-persistent-connection) · [Scaling the GPU, the one thing that does not autoscale](#scaling-the-gpu-the-one-thing-that-does-not-autoscale) · [Scaling the tools and the state](#scaling-the-tools-and-the-state) · [Performance: what the model sees on every call](#performance-what-the-model-sees-on-every-call) · [Out of scope](#out-of-scope)
+[Scaling the orchestrator pods, CPU](#scaling-the-orchestrator-pods-cpu) · [Scaling the persistent connection](#scaling-the-persistent-connection) · [Scaling the GPU, the one thing that does not autoscale](#scaling-the-gpu-the-one-thing-that-does-not-autoscale) · [Scaling the tools and the state](#scaling-the-tools-and-the-state) · [Performance](#performance-what-the-model-sees-on-every-call) · [Out of scope](#out-of-scope)
 
 The loop itself is cheap. What has to scale is around it: the pods that run the loop, the connections that carry the answer back, the one GPU every tenant shares, and the context the model reads on every call. Durability already moved the loop behind a queue; this page builds on that picture.
 
@@ -66,19 +66,7 @@ I pick the meter and the shared service, because a pod only ever sees its own sl
 
 ## Performance: what the model sees on every call
 
-A model call is stateless; on every pass the harness decides what the model reads, and that decision is most of the cost of a turn.
-
-- **The prefix cache.** The model server reuses the longest unchanged prefix of the prompt; one changed token invalidates everything after it. So prompt order decides whether anything is ever reused: stable first, volatile last, and only ever append. System prompt, tool definitions in a fixed order, the history as it happened, the new turn at the bottom. On a big prompt the prefix hit is about half the turn.
-- **The incident.** Every question in a conversation was slower and more expensive than the one before. Replaying one recorded conversation and plotting latency and tokens per turn showed a rising line; a model problem is flat, so the problem was ours. The prompt was ordered volatile-first, so the cache never hit, and by turn sixteen ten identical tool results had been re-injected, most of the prompt. Reordering, append-only, and references instead of copies cut context to about a tenth; the long-conversation turn went from twenty or thirty seconds to about six. Trim, a window and dedupe shipped; summary compaction is the direction.
-- **Dedupe of tool results.** The agent re-checks because it cannot tell whether the data changed. Blocking the repeat is wrong when the data does change; dropping the old result rewrites the prefix and kills the cache. So the repeat becomes a reference, "unchanged, see above", and the old result is never touched. Only where the data is stable. This is built in v2.
-- **Which tools to offer, once the catalog reaches hundreds.** Every tool definition rides in every model call, about five hundred tokens each, and past a few dozen the model mis-picks among look-alikes. My platform today hands the model every imported tool on every call and lists each tool server live on every turn. The proposal: build the catalog once at registration and index it; offer the model a few pinned tools plus one search tool; when it searches, answer from the index with names and one-liners, load the found definitions for the next call, and remember them with the conversation. The honest trade is one extra model call the first time a capability is needed, and a handful of definitions instead of hundreds on every call after. Under about ten tools, just load them.
-- **Multi-agent leakage.** Each agent sees only what it needs; the classifier gets just enough to route. A sibling's reasoning in your prompt is cost, and it can derail you. Sub-agents are built that way here: the child gets the goal and its own tools, the parent gets the answer.
-
-| Tool catalog | How it works | What you get | What it costs |
-|---|---|---|---|
-| load everything (today) | every imported tool in every call | fine under about ten tools | five hundred tokens per tool per call; mis-picks past a few dozen |
-| threshold plus a search tool, no new infrastructure | keyword scoring over names and descriptions in the orchestrator; a few pinned tools plus `search_tools` | starts working now | keyword scoring flatters hand-written descriptions |
-| catalog plus a hybrid index (the target) | the catalog indexed at registration, keyword plus vector, the agent's allowlist as the filter | a search in tens of milliseconds with no model call; a handful of definitions per call | one extra model call on first use; a refresh job; the index to run |
+Performance is time and tokens, and it has its own page: [PERFORMANCE.md](PERFORMANCE.md). Four optimizations, each with its picture: the prefix cache and prompt order, tools in the hundreds, dedupe of tool results, and multi-agent leakage; and for each, what v2 implements.
 
 ## Out of scope
 
