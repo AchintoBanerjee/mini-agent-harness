@@ -1,8 +1,8 @@
-# The loop's features, already built
+# v2: additional features
 
 [The context is the memory](#the-context-is-the-memory) · [Parallel tool calls](#parallel-tool-calls) · [A clock on every tool call](#a-clock-on-every-tool-call) · [The agent's tool list is the gate](#the-agents-tool-list-is-the-gate) · [The pass cap and the budget](#the-pass-cap-and-the-budget) · [Chaining across passes](#chaining-across-passes) · [The answer](#the-answer)
 
-Small things the loop does that have no page of their own. Each one: what it does, a real run, where it lives. Every output is from `./demo.sh`; the committed `demo-output.txt` is a later run, so ids and timings differ, nothing else.
+What the loop already does beyond the HLD picture, before the deep dives. Each one: what it does, a real run, where it lives. Every output is from `./demo.sh`; the committed `demo-output.txt` is a later run, so ids and timings differ, nothing else.
 
 | Feature | In v2 | The proof |
 |---|---|---|
