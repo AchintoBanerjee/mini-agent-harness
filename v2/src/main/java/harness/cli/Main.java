@@ -8,6 +8,9 @@ import harness.core.RelaySummarizer;
 import harness.core.RunListener;
 import harness.core.Span;
 import harness.core.Turn;
+import harness.eval.CaseResult;
+import harness.eval.EvalRunner;
+import harness.eval.GoldenCase;
 import harness.model.RuleBasedLLM;
 import harness.model.ToolCall;
 import harness.store.FileRunStore;
@@ -16,6 +19,7 @@ import harness.tools.ToolCaller;
 import harness.tools.ToolLoader;
 import harness.tools.ToolRegistry;
 import harness.tools.ToolResult;
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
 import java.util.ArrayList;
@@ -24,18 +28,20 @@ import java.util.List;
 
 /**
  * Command line, run from v2/: agents · tools · run --agent X "question" ["question" ...]
- * [--slow] [--crash-after N] [--crash-before-persist] · resume runId · replay runId [fromStep].
- * Args are parsed by hand. Agents and tools are read from agents/ and tools/; every run
- * is logged to runs/. The two crash flags simulate a process dying mid-run so that
- * resume has something to pick up; --slow gives every lookup 300 ms of simulated latency
- * so that tools running together can be seen to overlap. Tool calls are gated by the
- * agent: only its listed tools run, each within its toolTimeoutMs.
+ * [--slow] [--crash-after N] [--crash-before-persist] · resume runId · replay runId [fromStep]
+ * · eval [evals/golden.json]. Args are parsed by hand. Agents and tools are read from
+ * agents/ and tools/; every run is logged to runs/. The two crash flags simulate a process
+ * dying mid-run so that resume has something to pick up; --slow gives every lookup 300 ms
+ * of simulated latency so that tools running together can be seen to overlap. Tool calls
+ * are gated by the agent: only its listed tools run, each within its toolTimeoutMs. eval
+ * scores the golden set in memory and prints one row per case and the totals.
  */
 public class Main {
 
     static final Path AGENTS = Path.of("agents");
     static final Path TOOLS = Path.of("tools");
     static final Path RUNS = Path.of("runs");
+    static final Path GOLDEN = Path.of("evals", "golden.json");
     static final int CRASH_EXIT = 3;
 
     public static void main(String[] args) {
@@ -49,6 +55,7 @@ public class Main {
             case "run" -> run(rest);
             case "resume" -> resume(rest);
             case "replay" -> replay(rest);
+            case "eval" -> eval(rest);
             default -> usage();
         }
     }
@@ -147,6 +154,23 @@ public class Main {
         }
     }
 
+    /** Scores the golden set: one row per case, then the footer with the harness scores and the agent score. */
+    static void eval(List<String> args) {
+        if (args.size() > 1) {
+            fail("usage: eval [evals/golden.json]");
+        }
+        Path file = args.isEmpty() ? GOLDEN : Path.of(args.get(0));
+        if (!Files.exists(file)) {
+            fail("no golden set at " + file);
+        }
+        EvalRunner runner = new EvalRunner(AgentLoader.loadAll(AGENTS), ToolLoader.load(TOOLS));
+        List<CaseResult> results = runner.run(GoldenCase.loadAll(file));
+        for (int i = 0; i < results.size(); i++) {
+            System.out.println(results.get(i).line(i + 1));
+        }
+        System.out.println(EvalRunner.footer(results));
+    }
+
     /** Simulated crash: row N is in the file and on screen, then the process is gone. */
     static RunListener crashAfter(int n) {
         ConsoleListener console = new ConsoleListener();
@@ -223,7 +247,7 @@ public class Main {
 
     static void usage() {
         fail("usage: agents | tools | run --agent <name> \"question\" [\"question\" ...] [--slow] [--crash-after N] [--crash-before-persist]"
-                + " | resume <runId> | replay <runId> [fromStep]");
+                + " | resume <runId> | replay <runId> [fromStep] | eval [evals/golden.json]");
     }
 
     static void fail(String message) {
