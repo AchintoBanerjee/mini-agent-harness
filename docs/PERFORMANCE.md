@@ -84,6 +84,7 @@
 - In the broadcast shapes, a supervisor or a group chat on one shared transcript, every agent's tool calls and reasoning land in the classifier's context and in every sibling's. Nobody needs it: the classifier needs enough to route, a sibling needs another agent's answer at most.
 - It hurts twice. Cost: each hop re-sends the whole growing transcript to everyone, about two model calls per hop, growth with the square of the hops. Quality: an agent reading another agent's half-finished reasoning gets derailed.
 - The fix is isolation by construction, not prompt discipline: each agent runs in its own context and sees only what it is given; only answers cross the boundary, never monologue. The lighter pattern has none of this: agent as a tool, where the child gets the goal and its own tools and the parent gets the answer.
+- The DAG is not immune. Usually a model node at the top routes to the right branch, or a plain rule does, and the nodes pass their results along one shared conversation. If a node's tool calls and a child agent's context ride along in that conversation, the router and every later node read all of it, and the leak is back by the side door. Each node gets its inputs and passes on its output only; its tool calls and its child's transcript stay inside the node. Watch it closely: it is the common way a clean DAG turns into a broadcast.
 
 **Time and tokens**
 

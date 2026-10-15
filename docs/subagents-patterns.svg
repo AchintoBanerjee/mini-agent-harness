@@ -29,7 +29,7 @@
 <rect class="s" x="890" y="150" width="100" height="44"/><text class="h" x="940" y="168" text-anchor="middle">answer</text><text class="m" x="940" y="184" text-anchor="middle">model node</text>
 <line class="l" x1="860" y1="72" x2="888" y2="72"/><line class="l" x1="990" y1="72" x2="998" y2="72"/><path class="p" d="M1050,94 L1050,172 L992,172"/>
 <text class="m" x="760" y="130">the edges hold the routing:</text>
-<text class="m" x="760" y="305">zero tokens for the routing · each node sees its inputs:</text><text class="bx" x="760" y="320">replayable, testable · the engine I would use is Temporal</text>
-<text class="m" x="760" y="338">not implemented here</text>
+<text class="m" x="760" y="305">zero tokens for the routing · each node sees its inputs only:</text><text class="bx" x="760" y="320">replayable, testable · the engine I would use is Temporal</text>
+<text class="m" x="760" y="338">not implemented here · tool calls and child context stay in their node</text>
 <text class="m" x="15" y="366">One question decides: do I know the sequence up front? Known → the DAG. Unknown → agent as a tool. Group chat is the escape hatch and never the default. Red = the pattern that leaks and doubles the calls · blue = the lighter patterns.</text>
 </svg>

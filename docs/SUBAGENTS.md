@@ -27,6 +27,7 @@ One question decides: do I know the sequence up front? Known → the DAG. Unknow
 Things to watch for:
 
 - one agent's context leaking into another's: the answer should cross, not the transcript;
+- the same leak inside a DAG: the router node, a model or a plain rule, and the nodes after it share one conversation; a node's tool calls and a child agent's context must stay inside the node, only its output passes on, or the DAG is a broadcast again. Watch this one closely; it is common;
 - a supervisor that must see everything to decide anything;
 - cost per hop that nobody measured;
 - an agent that delegates to itself (the depth cap);
@@ -270,6 +271,6 @@ done r-000b · 9 spans · 71 ms · DONE in harness.db · acked · handler calls:
 
 ## The DAG
 
-The other pattern, for when the sequence is known. Most of the time you do know your workflow, and workflows can be long, so scaling them is the concern. The DAG holds the flow and the model never decides it: the routing is the edges, zero tokens, replayable, testable.
+The other pattern, for when the sequence is known. Most of the time you do know your workflow, and workflows can be long, so scaling them is the concern. The DAG holds the flow and the model never decides it: the routing is the edges, zero tokens, replayable, testable. Where a model node does route, at the top, it routes on its inputs only: the nodes share one conversation, so each node's tool calls and child context stay inside the node and only its output goes on, or the leak from pattern 1 is back.
 
 For this proof of concept I built agent as a tool, because the example's sequence is not known up front and it fits the loop we already have. The DAG is just as implementable, and it is better implemented on a workflow engine such as Temporal than hand-rolled: durable, replayable, a long workflow survives its worker. Which of the two a platform leans on is a choice to validate and weigh against its own workloads, not a ranking; my platform ended up with both.

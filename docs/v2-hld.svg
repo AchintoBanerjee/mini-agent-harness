@@ -10,7 +10,8 @@
 <rect class="s" x="850" y="50" width="170" height="60"/><text class="h" x="935" y="70" text-anchor="middle">Tool layer</text><text class="m" x="935" y="86" text-anchor="middle">registry from tools/*.json</text><text class="m" x="935" y="100" text-anchor="middle">type picks the adapter</text>
 <rect class="mt" x="850" y="135" width="170" height="60"/><text class="h" x="935" y="155" text-anchor="middle">Model (GPU)</text><text class="m" x="935" y="171" text-anchor="middle">a rule stub today</text><text class="wm" x="935" y="186" text-anchor="middle">shared by every customer</text>
 <path class="s" d="M470,235 a125,9 0 0 1 250,0 v52 a125,9 0 0 1 -250,0 z"/><path d="M470,235 a125,9 0 0 0 250,0" fill="none" stroke="#1a1f2b" stroke-width="1.2"/><text class="h" x="595" y="258" text-anchor="middle">Run store — SQLite</text><text class="m" x="595" y="274" text-anchor="middle">conversation → turn (job id) → span rows</text><text class="m" x="595" y="288" text-anchor="middle">one tenant database at scale, same tables</text>
-<line class="l" x1="155" y1="80" x2="168" y2="80"/><path class="d" d="M170,96 L157,96"/>
+<line class="l" x1="155" y1="80" x2="168" y2="80"/>
+<path class="d" d="M230,195 L230,222 L85,222 L85,112"/><text class="m" x="95" y="212">SSE: the steps, then the answer</text>
 <line class="l" x1="357" y1="100" x2="370" y2="100"/>
 <line class="l" x1="820" y1="80" x2="848" y2="80"/>
 <path class="p" d="M820,120 L835,120 L835,165 L848,165"/>
