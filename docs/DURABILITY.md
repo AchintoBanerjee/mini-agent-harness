@@ -1,6 +1,6 @@
 # Durability
 
-[The issue](#the-issue) · [The design](#the-design) · [The choices](#the-choices) · [What I ran](#what-i-ran) · [The implementation](#the-implementation) · [Proof](#proof)
+[The issue](#the-issue) · [The design](#the-design) · [The guarantee](#the-guarantee) · [The choices](#the-choices) · [What I ran](#what-i-ran) · [The implementation](#the-implementation) · [Proof](#proof)
 
 A turn (job id) becomes a message on a queue, a worker runs it, and when the worker dies the next one picks the turn up from its last saved step. This is how I envision it with SQS; the POC shows the bare minimum of the idea with a SQLite table standing in for the queue, the same three calls. Everything beyond that is out of scope here and says so. Every output below is pasted from `demo-output.txt`, which `./demo.sh` writes.
 
@@ -32,6 +32,25 @@ A turn (job id) becomes a message on a queue, a worker runs it, and when the wor
 Out of scope for the POC, in the design only: the dead-letter queue, a sweeper for jobs that never finish, more than one worker process at a time on one file.
 
 The diagram's names for the same rows, conversation → turn (job id) → span, are the whiteboard's; in the code today the tables are `job` and `step`.
+
+## The guarantee
+
+What the queue promises, and what it cannot, said once and shown on one turn.
+
+![the two places a worker can die](durability-windows.svg)
+
+| What | Guarantee | What makes it true |
+|---|---|---|
+| a step that is saved | runs once | resume starts after it |
+| the model's decision | recorded, never asked twice | it is saved before the tool runs |
+| the one call in flight when the worker dies | may run twice | the harness cannot know whether the tool did its work, so it runs it again: at least once |
+| a tool that writes | no double effect | it is idempotent on the key the harness gives it, job id plus step |
+| the whole turn | finishes, or is handed to the next worker | ack only after the last step is saved; no ack, the lease runs out |
+
+- Window A, the worker dies after a step is saved: the next worker continues after that step. Nothing runs twice, the model is not asked again.
+- Window B, the worker dies after the tool ran but before its result was saved: the next worker runs the tool again. The key makes a writing tool a no-op; a read just repeats.
+- So the queue is at-least-once, and the tools carry the rest. That is good enough for production; it is what I ran.
+- Temporal keeps this bookkeeping for you: a completed step is in its history and never re-runs, and retries and timers are its. The side effect inside a step is still at least once, so it still asks for idempotent activities. The contract is the same; what you buy is that the bookkeeping is no longer yours to get right.
 
 ## The choices
 
