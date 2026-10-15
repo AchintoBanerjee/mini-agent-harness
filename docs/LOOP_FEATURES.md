@@ -1,6 +1,6 @@
 # The loop's features, already built
 
-[Parallel tool calls](#parallel-tool-calls) · [A clock on every tool call](#a-clock-on-every-tool-call) · [The agent's tool list is the gate](#the-agents-tool-list-is-the-gate) · [The pass cap and the budget](#the-pass-cap-and-the-budget) · [Chaining across passes](#chaining-across-passes) · [Dedupe](#dedupe) · [The answer](#the-answer)
+[Parallel tool calls](#parallel-tool-calls) · [A clock on every tool call](#a-clock-on-every-tool-call) · [The agent's tool list is the gate](#the-agents-tool-list-is-the-gate) · [The pass cap and the budget](#the-pass-cap-and-the-budget) · [Chaining across passes](#chaining-across-passes) · [The answer](#the-answer)
 
 Small things the loop does that have no page of their own. Each one: what it does, a real run, where it lives. Every output is from `./demo.sh`; the committed `demo-output.txt` is a later run, so ids and timings differ, nothing else.
 
@@ -11,7 +11,6 @@ Small things the loop does that have no page of their own. Each one: what it doe
 | the agent's tool list is the gate | built: a tool the model names outside the list is `DENIED` without running, the loop moves on | `OrchestratorTest` |
 | the pass cap and the budget | built: `maxPasses` per agent, `maxModelCalls` shared down a sub-agent tree, the depth cap | `OrchestratorTest`, `SubAgentTest`, the loop agent in the demo |
 | chaining across passes | the loop and resume support it; the stub decides once, in pass 1, and says done in pass 2, so no chain shows in v2 | the sub-agent run is the one chain the demo shows |
-| dedupe | built: a repeated call is a reference | the follow-up turn in the demo |
 | the answer | built: the last pass's results relayed, failures named; a model's final reply replaces it | every turn in the demo |
 
 ## Parallel tool calls
@@ -104,7 +103,7 @@ Where: `Orchestrator.loop` for the cap and the budget, `TurnBudget`, `Orchestrat
 
 ## Chaining across passes
 
-- The loop is the chain. Pass N's tool result is in the context the model sees in pass N+1, so a model that needs a second lookup asks for it next, and so on until it says done. With a real model: "Where is my order ORD-1?" → pass 1 `order_status(ORD-1)` → "SHIPPED, shipment SHP-1" → pass 2 `shipping_status(SHP-1)` → pass 3 done. Nothing in the loop changes for that; resume works in the middle of a chain, because every pass is rows in the store.
+- A chain is inside one turn: pass 2 asks for a tool because of what pass 1 returned. The loop is built for it. Pass N's tool result is in the context the model sees in pass N+1, so a model that needs a second lookup asks for it next, and so on until it says done. With a real model: "Where is my order ORD-1?" → pass 1 `order_status(ORD-1)` → "SHIPPED, shipment SHP-1" → pass 2 `shipping_status(SHP-1)` → pass 3 done. Resume works in the middle of a chain, because every pass is rows in the store.
 - The stub never chains. It reads the question once, in pass 1: every tool whose keywords and id pattern fit is called, one as a single call, several as one batch run together. In pass 2 it sees a call row in the context and says done. The missing piece is a decision made from a result, "the order says shipment SHP-1, look that up", and that is the model's job. Saying so plainly beats faking it with a rule.
 - The one chain v2 does show is the sub-agent run: the parent decides, the child runs its own pass, the parent gets the answer and finishes. Six rows, one turn:
 
@@ -118,16 +117,6 @@ Where: `Orchestrator.loop` for the cap and the budget, `TurnBudget`, `Orchestrat
 ```
 
 Where: `Orchestrator.loop` and `Orchestrator.context`; the sub-agents page has the rest.
-
-## Dedupe
-
-- A call whose tool and input already ran OK anywhere in the conversation is not run again. Its row is `DEDUPED`, "unchanged, see step 2", pointing at the step it repeats, and the answer relays that step's output.
-
-```
-  5  TOOL  order_status {orderId=ORD-1} -> unchanged, see step 2  [DEDUPED 0 ms]
-```
-
-Where: `Orchestrator.earlierOk`. Why it matters for the prompt is on the performance page.
 
 ## The answer
 
