@@ -14,6 +14,8 @@ A run can hand a question to another agent and get the answer back as a tool res
 
 Three ways to let agents work together. The first is the one we did, and it was the wrong default; the other two are the ones that work, and they answer different questions.
 
+![three ways to let agents work together](subagents-patterns.svg)
+
 | option | who decides the next step | who sees what | cost per hop |
 |---|---|---|---|
 | group chat / supervisor broadcast | a supervisor model, every round, from the whole transcript | every agent sees the whole monologue | about two model calls per hop, the worker's and the supervisor's, and the transcript grows with every hop, so the tokens grow with the square of the hops |
