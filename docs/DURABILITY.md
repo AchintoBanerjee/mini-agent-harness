@@ -71,7 +71,12 @@ I pick the queue: the simplest thing that works at the scale I ran, and the leas
 
 ## The implementation
 
-The queue is one table in the same SQLite file as the runs, and `RunQueue` is the three calls on it; swap the table for SQS and the three calls are the same.
+What runs here, said plainly:
+
+- One jar, two commands. `serve` is the API process; `worker` is the orchestrator process. Two JVM processes on one laptop, one SQLite file between them.
+- Not containers, not pods, no network between the two. A process exiting stands in for a pod dying, a second process for the next pod, the `queue` table for SQS, the file for the tenant database.
+- One worker at a time on the file. More than one worker process at once is out of scope here: SQLite has one writer, and the three calls would move to SQS before a second worker is needed.
+- The queue is one table in the same file as the runs, and `RunQueue` is the three calls on it; swap the table for SQS and the three calls are the same.
 
 <details><summary>the three SQL statements of the queue: receive, extend, ack</summary>
 
@@ -116,7 +121,7 @@ The store says whether a worker died on this job (it has steps), so resuming is 
 
 ## Proof
 
-The demo, the bare minimum: submit, a worker that dies after its second row, two seconds for the lease to run out, the next worker resuming from that row, the turn DONE over HTTP.
+The demo, the bare minimum, two processes on one laptop: submit, a worker process that dies after its second row, two seconds for the lease to run out, a second worker process resuming from that row, the turn DONE over HTTP.
 
 <details><summary>proof: the crash, the expired lease, the resume</summary>
 

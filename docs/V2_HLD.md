@@ -11,10 +11,11 @@ The harness as a small service: you call it over HTTP, its state lives in one SQ
 - **End users** ask a question and get a job id back at once; the answer follows as a stream.
 - **API layer** is the one face: `POST /runs` writes the turn row and returns its id; `GET /turns/{id}` reads it; `GET /turns/{id}/events` streams it.
 - **Orchestrator** is the loop: build the context, call the model, run the tool it asks for, repeat until the model says done or the agent's pass cap hits. Every step is written to the store before the next one is taken.
+- **Two processes, one jar.** The API process runs no loop; a worker process over the same file does. A turn is seconds of model and tool calls and has to outlive the request that created it, so the API only writes the turn row and queues it, and whichever worker is free runs it. The two also scale on different signals: requests on one side, queue depth on the other. In this repo both are commands of one jar on one laptop, not pods; the queue and the lease between them are the durability page.
 - **Tool layer** is the registry built from `tools/*.json`; the file's type picks the adapter, the agent's file says which tools it may call and for how long.
 - **Model** is a rule stub today; a real model goes behind the same interface, and in production it is the one step shared by every customer.
 - **Run store** is SQLite here and the tenant database at scale, same tables.
-- **The dashed arrow** is the stream: events by job id go back to whichever API node holds the client's connection.
+- **The dashed arrow** is the stream: the API reads the steps from the store by job id and sends them to the client as they land. It never talks to the loop, so any API node can serve any client, and a worker that dies does not close the stream.
 
 Why a job id and a stream, when the stub answers in milliseconds:
 
