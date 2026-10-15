@@ -1,17 +1,56 @@
 # The loop's features, already built
 
-[Parallel tool calls](#parallel-tool-calls) · [A clock on every tool call](#a-clock-on-every-tool-call) · [The agent's tool list is the gate](#the-agents-tool-list-is-the-gate) · [The pass cap and the budget](#the-pass-cap-and-the-budget) · [Chaining across passes](#chaining-across-passes) · [The answer](#the-answer)
+[The context is the memory](#the-context-is-the-memory) · [Parallel tool calls](#parallel-tool-calls) · [A clock on every tool call](#a-clock-on-every-tool-call) · [The agent's tool list is the gate](#the-agents-tool-list-is-the-gate) · [The pass cap and the budget](#the-pass-cap-and-the-budget) · [Chaining across passes](#chaining-across-passes) · [The answer](#the-answer)
 
 Small things the loop does that have no page of their own. Each one: what it does, a real run, where it lives. Every output is from `./demo.sh`; the committed `demo-output.txt` is a later run, so ids and timings differ, nothing else.
 
 | Feature | In v2 | The proof |
 |---|---|---|
+| the context is the memory | built: every pass the model gets the question plus every row of the turn so far, rebuilt from the store, so a resumed worker sees the same | every turn; the durability demo for the rebuild |
 | parallel tool calls | built: two tools in one reply run together, rows in request order, a note row says wall against work | the demo's `--slow` section |
 | a clock on every tool call | built: the agent's `toolTimeoutMs`, the call is cut off, the answer names it | the chaos stream in the demo |
 | the agent's tool list is the gate | built: a tool the model names outside the list is `DENIED` without running, the loop moves on | `OrchestratorTest` |
 | the pass cap and the budget | built: `maxPasses` per agent, `maxModelCalls` shared down a sub-agent tree, the depth cap | `OrchestratorTest`, `SubAgentTest`, the loop agent in the demo |
 | chaining across passes | the loop and resume support it; the stub decides once, in pass 1, and says done in pass 2, so no chain shows in v2 | the sub-agent run is the one chain the demo shows |
 | the answer | built: the last pass's results relayed, failures named; a model's final reply replaces it | every turn in the demo |
+
+## The context is the memory
+
+- The model keeps nothing between calls. Every pass, the loop builds the context again: the question, and every row of this turn so far, what was decided and what each tool returned. That is the memory inside a turn, and it is the rows.
+- The rows live in the store before the next pass is taken, so a worker that resumes loads them and builds the same context the dead one had. A chain continues where it stopped; the first lookup does not run again.
+- The rows only ever grow at the end. That is what lets the model server reuse what it already read, the prefix cache on the performance page.
+
+What pass 2 sees for the status question: the question again, row 1 (the decision) and row 2 (the result). The stub reads row 2 and says done; a real model reads "shipment SHP-1" in it and may ask for the next lookup.
+
+```
+question: What is the status of order ORD-1?
+rows so far:
+  1  LLM   pass 1 -> ToolCall[toolName=order_status, input={orderId=ORD-1}]
+  2  TOOL  order_status {orderId=ORD-1} -> Order ORD-1: SHIPPED, shipment SHP-1
+```
+
+<details><summary>the code</summary>
+
+```java
+/** What the model sees: the question, the rows already recorded in this turn, and the earlier turns as Q/A lines. */
+public record Context(String question, List<Span> spans, List<String> history) { }
+
+// Orchestrator, before every model call
+private Context context(Turn turn) {
+    ...
+    return new Context(turn.question(), List.copyOf(turn.spans()), history);
+}
+
+// RuleBasedLLM: the stub reads the rows; a call row means the work is done
+for (Span span : context.spans()) {
+    if (span.kind().isCall()) {
+        return new Done();
+    }
+}
+```
+</details>
+
+Where: `Context`, `Orchestrator.context`, `Orchestrator.open` for the rebuild on resume. The durability page's proof is the rebuild in action.
 
 ## Parallel tool calls
 
