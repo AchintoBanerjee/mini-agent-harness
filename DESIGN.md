@@ -21,10 +21,11 @@ Page: [docs/V2_HLD.md](docs/V2_HLD.md)
 
 ![v2 HLD](docs/hld.svg)
 
-- One service, two layers: the HTTP face and the loop. A turn is a job: `POST /runs` writes the turn row and answers with its id at once; the answer streams back over SSE as the steps and the tokens happen; `GET /turns/{id}` reads it after.
-- Three tables, from the whiteboard: a conversation has turns, a turn is one job, a turn has spans. Every step is written to the store before the next one is taken.
-- Agents and tools are files; the file's type picks the adapter; a builder would be its own service in front of this metadata.
-- A question that needs several tool calls: sequential when the second lookup needs the first's result, parallel when the question names two independent things; the model decides which from what it has read.
+- The same loop as v1, run as a small service: the API layer takes the question and answers with a job id at once; the loop runs the turn and streams the answer back; every step is a row in the store before the next one is taken.
+- The loop's two seams are drawn as v1 drew them. Behind the LLM proxy sits the rule stub in this POC and a model on a GPU behind a gateway in production. Behind the tools sit lookups here and REST and MCP calls as the user in production.
+- A question that needs several tool calls runs them one after the other when the second needs the first's result, and together when it does not; the model decides which from what it has read.
+
+How to run it, the endpoints, the three tables and the proof under each claim are on [the HLD page](docs/V2_HLD.md).
 
 ## 3 · v2: additional features
 
