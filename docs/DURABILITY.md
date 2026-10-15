@@ -1,6 +1,6 @@
 # Durability
 
-[The issue](#the-issue) · [The design](#the-design) · [The choices](#the-choices) · [The implementation](#the-implementation) · [Proof](#proof)
+[The issue](#the-issue) · [The design](#the-design) · [The choices](#the-choices) · [What I ran](#what-i-ran) · [The implementation](#the-implementation) · [Proof](#proof)
 
 A turn (job id) becomes a message on a queue, a worker runs it, and when the worker dies the next one picks the turn up from its last saved step. Every output below is pasted from `demo-output.txt`, which `./demo.sh` writes.
 
@@ -16,7 +16,7 @@ A turn (job id) becomes a message on a queue, a worker runs it, and when the wor
 
 - **End users → API layer**: the question comes in; the API writes the job row (`QUEUED`) and a message on the queue in one transaction, and returns the job id at once. No loop runs in this process.
 - **Run queue**: the message is the turn. `receive` hides it for the visibility window, and that window is the lease: whoever holds it is the only worker on the turn.
-- **Workers**: a worker receives, claims the job row (`RUNNING`, its pid, attempts + 1) and runs the loop; each step is written to the store before the next one, and each written step extends the lease.
+- **Workers**: a worker receives, claims the job row (`RUNNING`, its process id, attempts + 1) and runs the loop; each step is written to the store before the next one, and each written step extends the lease.
 - **Ack**: only after the last step is saved and the job row says `DONE` does the worker delete the message.
 - **Dead worker**: no ack, the lease runs out, the message is visible again; the next worker receives it, finds the saved steps, and resumes from the last one, so the model is asked only for what comes next.
 - **DLQ** (dead-letter queue): a message received more than 3 times is not delivered a fourth time; the job row goes to `DEAD` and `GET /dlq` lists it.
@@ -39,7 +39,15 @@ The diagram's names for the same rows, conversation → turn (job id) → span, 
 | a queue with a visibility timeout | the three calls of SQS (Amazon's Simple Queue Service): `receive` hides the message for a window, `extend` pushes the window, `ack` deletes; no ack and the window runs out on its own | the orphan problem is solved by the protocol: a dead worker's message comes back by itself, counted, and a limit sends it to the DLQ | the message and the job row are two things to keep in step; the one call in flight at a crash can run twice |
 | Temporal | a workflow engine replays the turn's history to rebuild its state; activities retry by policy, timers and signals are built in | exactly-once workflow steps, retries, timers, long waits, versioning, a UI | a cluster to run, a programming model to learn, the loop rewritten as a workflow |
 
-I pick the queue: the simplest thing that works at the scale I ran; Temporal is the step up if the shapes outgrow it.
+I pick the queue: the simplest thing that works at the scale I ran, and the lease and the redelivery come from the protocol instead of from code I have to get right. Temporal is the step up: its own infrastructure and a programming model, in return for replay, timers and long waits. If the scale or the workflow shapes outgrow the queue, that is where I go.
+
+## What I ran
+
+- The first version checkpointed the run only at wait points: an approval, a timer, a long call. Between them the run lived in memory, and a crash between them lost it.
+- The next version put an SQS-style queue with a visibility timeout in front of the loop: the worker extends it while the run is live, acks only after the step is persisted, a dead worker's message becomes visible again and another pod picks it up, repeated failures go to the DLQ. The scaling lever became queue depth, not request count.
+- Resume is an opt-in log of completed tool calls per conversation: the new pod rebuilds the context from it and the model continues.
+- The contract, said as a contract: completed tool calls run once, the one in-flight call at least once, so tool writes are idempotent by key; the fix if that is ever not enough is a started-marker before the call and a check on resume.
+- We never evaluated Temporal; with hindsight durability was the real hard problem, and I would put a durable-execution engine under the loop.
 
 ## The implementation
 
@@ -70,7 +78,7 @@ public void ack(String jobId) {                                           // the
 }
 ```
 
-One `UPDATE` both finds the oldest visible message and hides it, so two workers asking at the same moment cannot both get it; `extend` and `ack` are one statement each. The JDBC plumbing around each statement is left out here; `RunQueue.java` has it.
+One `UPDATE` both finds the oldest visible message and hides it, so two workers asking at the same moment cannot both get it; `extend` and `ack` are one statement each. The database plumbing around each statement is left out here; `RunQueue.java` has it.
 </details>
 
 The worker is the loop around those calls: receive, claim, run or resume, ack last.
@@ -85,10 +93,11 @@ String jobId = message.jobId();
 if (message.dead()) { System.out.println("dead-lettered " + jobId + ...); return true; }
 int attempt = store.claim(jobId, name);                                    // RUNNING, claimed_by, attempts + 1
 List<Span> saved = store.load(jobId);
-RunListener listener = span -> { queue.extend(jobId, visibilityMs); print.on(span); };   // after every written row
+// inside orchestrator(job, jobId): a listener that runs after every written row:
+//   span -> { queue.extend(jobId, visibilityMs); print.on(span); }
 String answer = saved.isEmpty()
-        ? orchestrator(job, listener).start(jobId, job.question())        // a fresh turn
-        : orchestrator(job, listener).resume(jobId);                      // a dead worker's turn, from its last row
+        ? orchestrator(job, jobId).start(jobId, job.question())           // a fresh turn
+        : orchestrator(job, jobId).resume(jobId);                         // a dead worker's turn, from its last row
 queue.ack(jobId);                                                          // the last thing
 ```
 
