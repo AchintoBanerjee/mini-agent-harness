@@ -12,7 +12,7 @@ This page is design, from running a harness in production at scale. v2 has the s
 
 ## The design
 
-The entry point is the LLM proxy from the HLD. In production it is the gateway, and the governor on the scaling page lives in it: routing and capacity are one decision made at one place, on one number.
+The entry point is the LLM proxy from the HLD. In production it is the inference wrapper: the one multi-tenant service in front of the GPUs, which every tenant's calls go through, while the loop itself runs inside each tenant's own single-tenant service. The governor on the scaling page lives in that same wrapper, so routing and capacity are one decision made at one place, on one number.
 
 ![routing: the agent declares its models, the router only picks where to run them](routing.svg)
 
