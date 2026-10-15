@@ -83,8 +83,8 @@ Page: [docs/EVAL.md](docs/EVAL.md)
 
 Page: [docs/ROUTING.md](docs/ROUTING.md)
 
-- Design, from production. The LLM proxy is the seam; in production it is the gateway, and the governor lives in it. The decision runs in order: what the tenant allows, an explicit pick, affinity for a live conversation, the agent's model class mapped to the nearest region with a backup, health and the governor's number, a fallback chain within the class.
-- Strong or cheap is decided by evals, not by the router: the golden set against both models, the class moves when the scores hold, the live judge watches after.
+- Design, from production. The router never chooses a model for an agent: the agent brings the models its golden set passed on, and the router only picks where to run it. Candidates are that set within what the tenant allows; a live conversation keeps its replica; otherwise the nearest permitted region whose meter is under the threshold, else the lowest meter; the fallback is the same list.
+- Strong or cheap is decided by evals, not by the router: the golden set against both models, the cheap one joins the set when the scores hold, the live judge watches after.
 
 ## 10 · Sandboxing tools
 
