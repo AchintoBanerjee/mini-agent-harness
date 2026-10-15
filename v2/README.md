@@ -4,17 +4,19 @@ The harness from the live round (`../v1`, frozen) extended in place. Agents and 
 files; every run is a job row plus one step row per step in `harness.db` (SQLite), each step
 written before it is acted on; a crashed run resumes from its rows; a runaway tool is cut off at
 the agent's timeout; independent tool calls run together; a repeated tool call is deduped inside
-a conversation; a golden set scores the harness itself; and `serve` puts the same loop behind an
-HTTP API that streams the answer over Server-Sent Events (SSE). The model is still a stub
+a conversation; a golden set scores the harness itself; `serve` puts the harness behind an HTTP API that
+streams the answer over Server-Sent Events (SSE); and a turn is a job on a queue: `POST /runs`
+or `submit` queues it, a `worker` process runs it, and a worker that dies loses its lease, so
+the next worker resumes the job from its saved steps. The model is still a stub
 (`RuleBasedLLM`): no network, no keys. The high-level design of the service is
-`../docs/V2_HLD.md`; the design write-up is `../DESIGN.md`; the live round's whiteboard is
-`../docs/v1-whiteboard.png`.
+`../docs/V2_HLD.md`; the queue, the lease and the dead worker are `../docs/DURABILITY.md`; the
+design write-up is `../DESIGN.md`; the live round's whiteboard is `../docs/v1-whiteboard.png`.
 
 ## Build and test
 
 ```
 cd v2
-mvn -q test       # 84 tests, about 7 s; tests use the in-memory store or a temp SQLite file
+mvn -q test       # 93 tests, about 8 s with Maven's own start; tests use the in-memory store or a temp SQLite file
 mvn -q compile    # classes to target/classes, Jackson and sqlite-jdbc (the two dependencies) to target/lib
 ```
 
@@ -30,6 +32,8 @@ java -cp "target/classes:target/lib/*" harness.cli.Main resume <runId>
 java -cp "target/classes:target/lib/*" harness.cli.Main replay <runId> [fromStep]
 java -cp "target/classes:target/lib/*" harness.cli.Main eval [evals/golden.json]
 java -cp "target/classes:target/lib/*" harness.cli.Main serve [--port 8080]
+java -cp "target/classes:target/lib/*" harness.cli.Main submit --agent <name> "question"
+java -cp "target/classes:target/lib/*" harness.cli.Main worker [--once] [--visibility-ms 2000] [--crash-after N] [--max-receives 3]
 ```
 
 On JDK 24+ put `--enable-native-access=ALL-UNNAMED` after `java`, or the SQLite driver's native
@@ -190,11 +194,13 @@ answer: Order ORD-1: SHIPPED, shipment SHP-1
 run r-184b · 4 passes · 2 tool calls · 24 ms · DONE in harness.db · handler calls: order_status=1
 ```
 
-### the HTTP API: `serve`, then curl
+### the HTTP API: `serve` and a `worker`, then curl
 
 `serve` starts the JDK's own `HttpServer` on localhost (default port 8080; `--port 0` picks a
 free one) over the same `agents/`, `tools/` and `harness.db`. JSON in and out, one virtual
-thread per request, errors as `{"error": "..."}`.
+thread per request, errors as `{"error": "..."}`. The server runs no loop: `POST /runs` writes
+the job row `QUEUED` and a message on the queue, and a `worker` process over the same file takes
+the job, runs it and acks it (the next section is what happens when that worker dies).
 
 | method | path | what it does | returns |
 | --- | --- | --- | --- |
@@ -202,45 +208,50 @@ thread per request, errors as `{"error": "..."}`.
 | GET | `/agents/{name}` | one agent file | `200`; `404` |
 | PUT | `/agents/{name}` | writes `agents/{name}.json` from the body | `201` created, `200` changed; `400` unknown tool, missing field, name mismatch |
 | GET | `/tools` | lists the tool files | `200`, a list |
-| POST | `/runs` | `{"agent","question"}`: job row in, loop on a virtual thread | `202 {"jobId","status":"RUNNING"}`; `400` |
-| GET | `/runs/{id}` | the job row, its steps, the answer when DONE | `200`; `404` |
+| POST | `/runs` | `{"agent","question"}`: job row `QUEUED` plus its queue message; a worker runs it | `202 {"jobId","status":"QUEUED"}`; `400` |
+| GET | `/runs/{id}` | the job row (status, `claimedBy`, `attempts`), its steps, the answer when DONE | `200`; `404` |
 | GET | `/runs/{id}/events` | SSE: the stored steps from `Last-Event-ID` or `?after=N`, then live, then `done` | `200 text/event-stream`; `404` |
+| GET | `/dlq` | the dead-letter list: the job rows with status `DEAD` | `200`, a list |
 
-The 202 comes back before the loop runs; the stream sends every stored step with the step number
-as its event id, follows the run by polling the file every 200 ms, and ends with `done` and the
-answer. A client that disconnects does not stop the run. The full outputs of every endpoint are in
-`../docs/V2_HLD.md`; the short ones:
+The 202 comes back before any worker has looked; the stream sends every stored step with the
+step number as its event id, follows the run by polling the file every 200 ms, and ends with
+`done` and the answer once the job is `DONE`, `FAILED` or `DEAD`. The rows come from the file, so
+the server does not care which worker wrote them. A client that disconnects does not stop the
+run. The full outputs of every endpoint are in `../docs/V2_HLD.md`; the short ones:
 
 ```
 $ java --enable-native-access=ALL-UNNAMED -cp "target/classes:target/lib/*" harness.cli.Main serve --port 0
-listening on http://localhost:59760 · agents/ tools/ harness.db · ctrl-c stops it
+listening on http://localhost:50352 · agents/ tools/ harness.db · POST /runs queues a job for a worker · ctrl-c stops it
 (the server stays in the background; --port 0 picked a free port, the manual uses 8080)
+$ java --enable-native-access=ALL-UNNAMED -cp "target/classes:target/lib/*" harness.cli.Main worker
+worker pid 27688 · lease 2000 ms · max receives 3 · polling every 500 ms, ctrl-c stops it · harness.db
+(the worker stays in the background too: the server only queues jobs, this process runs them)
 
-$ curl -s -X POST http://localhost:59760/runs -d '{"agent":"support","question":"What is the status of order ORD-1?"}'
+$ curl -s -X POST http://localhost:50352/runs -d '{"agent":"support","question":"What is the status of order ORD-1?"}'
 {
-  "jobId" : "r-be37",
-  "status" : "RUNNING"
+  "jobId" : "r-3921",
+  "status" : "QUEUED"
 }
 ```
 
 ```
 (a client that reconnects sends the last id it saw and gets only the tail)
-$ curl -sN --max-time 5 -H 'Last-Event-ID: 2' http://localhost:59760/runs/r-be37/events
+$ curl -sN --max-time 5 -H 'Last-Event-ID: 2' http://localhost:50352/runs/r-3921/events
 id: 3
 event: step
-data: {"run":"r-be37","step":3,"turn":1,"pass":2,"kind":"LLM","request":"pass 2","response":"Done[]","status":"OK","ms":0,"attrs":{"question":"What is the status of order ORD-1?"}}
+data: {"run":"r-3921","step":3,"turn":1,"pass":2,"kind":"LLM","request":"pass 2","response":"Done[]","status":"OK","ms":0,"attrs":{"question":"What is the status of order ORD-1?"}}
 
 event: done
-data: {"jobId":"r-be37","status":"DONE","answer":"Order ORD-1: SHIPPED, shipment SHP-1"}
+data: {"jobId":"r-3921","status":"DONE","answer":"Order ORD-1: SHIPPED, shipment SHP-1"}
 ```
 
 ```
 (the builder experience: an agent is a file, PUT writes it; a tool that does not exist is refused first)
-$ curl -s -X PUT http://localhost:59760/agents/returns -d @- <<< '{"name":"returns","description":"Refunds an order, by order id","tools":["refund_orders"],"maxPasses":3,"toolTimeoutMs":2000}'
+$ curl -s -X PUT http://localhost:50352/agents/returns -d @- <<< '{"name":"returns","description":"Refunds an order, by order id","tools":["refund_orders"],"maxPasses":3,"toolTimeoutMs":2000}'
 {
   "error" : "no tool named refund_orders in tools/"
 }
-$ curl -s -X PUT http://localhost:59760/agents/returns -d @- <<< '{"name":"returns","description":"Refunds an order, by order id","tools":["refund_order"],"maxPasses":3,"toolTimeoutMs":2000}'
+$ curl -s -X PUT http://localhost:50352/agents/returns -d @- <<< '{"name":"returns","description":"Refunds an order, by order id","tools":["refund_order"],"maxPasses":3,"toolTimeoutMs":2000}'
 {
   "name" : "returns",
   "description" : "Refunds an order, by order id",
@@ -250,7 +261,100 @@ $ curl -s -X PUT http://localhost:59760/agents/returns -d @- <<< '{"name":"retur
 }
 ```
 
-The demo removes `agents/returns.json` again at the end so the shipped agent list stays at three.
+The demo removes `agents/returns.json` again at the end so the shipped agent list stays at three,
+and stops the worker, whose own log shows that it, not the server, ran the two jobs:
+
+```
+worker pid 27688 · lease 2000 ms · max receives 3 · polling every 500 ms, ctrl-c stops it · harness.db
+received r-3921: attempt 1 · agent support · "What is the status of order ORD-1?"
+  1  LLM   pass 1 -> ToolCall[toolName=order_status, input={orderId=ORD-1}]  [OK 3 ms]
+  2  TOOL  order_status {orderId=ORD-1} -> Order ORD-1: SHIPPED, shipment SHP-1  [OK 0 ms]
+  3  LLM   pass 2 -> Done[]  [OK 0 ms]
+answer: Order ORD-1: SHIPPED, shipment SHP-1
+done r-3921 · 3 steps · 57 ms · DONE in harness.db · acked · handler calls: order_status=1
+received r-0468: attempt 1 · agent chaos · "Please hang while checking ORD-1"
+  1  LLM   pass 1 -> ToolCall[toolName=hang_forever, input={orderId=ORD-1}]  [OK 0 ms]
+  2  TOOL  hang_forever {orderId=ORD-1} -> cut off after 1000 ms  [TIMEOUT 1000 ms]
+  3  LLM   pass 2 -> Done[]  [OK 0 ms]
+answer: Tool hang_forever TIMEOUT: cut off after 1000 ms
+done r-0468 · 3 steps · 1020 ms · DONE in harness.db · acked · handler calls: order_status=1
+```
+
+### durability: `submit`, a worker that dies, the next worker resumes; the dead-letter list
+
+A turn is a message on the `queue` table with SQS's three operations (Amazon's Simple Queue
+Service): `receive` hands out the oldest visible message and hides it for the visibility window,
+which is the lease; `extend` pushes the window forward, and the worker does that after every
+step it writes; `ack` deletes the message, and the worker does that last. A worker that dies
+never acks, so its message comes back when the lease runs out, and the next worker finds the
+saved steps and resumes from the last one. A message received more than `--max-receives` (3)
+times is not delivered again: the job row goes to `DEAD` and `GET /dlq` lists it. The whole
+section, with `GET /runs/{id}` as the job goes QUEUED, RUNNING and DONE, is in `../docs/DURABILITY.md`.
+
+```
+$ java --enable-native-access=ALL-UNNAMED -cp "target/classes:target/lib/*" harness.cli.Main submit --agent support "What is the status of order ORD-1?"
+submitted r-9441 · QUEUED in harness.db · agent support · "What is the status of order ORD-1?"
+(a worker takes it with a 2000 ms lease and dies right after its 2nd row is persisted: exit 3, no ack)
+$ java --enable-native-access=ALL-UNNAMED -cp "target/classes:target/lib/*" harness.cli.Main worker --once --crash-after 2 --visibility-ms 2000
+worker pid 27732 · lease 2000 ms · max receives 3 · once · harness.db
+received r-9441: attempt 1 · agent support · "What is the status of order ORD-1?"
+  1  LLM   pass 1 -> ToolCall[toolName=order_status, input={orderId=ORD-1}]  [OK 3 ms]
+  2  TOOL  order_status {orderId=ORD-1} -> Order ORD-1: SHIPPED, shipment SHP-1  [OK 0 ms]
+crash: exit 3 right after row 2 of run r-9441 was persisted (simulated) · handler calls: order_status=1
+(process exited with code 3; the job row says RUNNING, the message is still queued but hidden until the lease runs out)
+$ sleep 2
+(the lease has run out, so the next worker receives the same message again and resumes from the last saved step:)
+$ java --enable-native-access=ALL-UNNAMED -cp "target/classes:target/lib/*" harness.cli.Main worker --once
+worker pid 27734 · lease 2000 ms · max receives 3 · once · harness.db
+received again: attempt 2, lease had expired · r-9441 resumes from step 2
+  3  NOTE  resumed from step 2  [OK 0 ms]
+  4  LLM   pass 2 -> Done[]  [OK 2 ms]
+answer: Order ORD-1: SHIPPED, shipment SHP-1
+done r-9441 · 4 steps · 29 ms · DONE in harness.db · acked · handler calls: none
+
+(the dead-letter case: a job whose worker dies after its first row every time; leases of 1000 ms, a second of sleep so each runs out)
+$ java --enable-native-access=ALL-UNNAMED -cp "target/classes:target/lib/*" harness.cli.Main submit --agent support "Where is my shipment SHP-1?"
+submitted r-e50c · QUEUED in harness.db · agent support · "Where is my shipment SHP-1?"
+$ java --enable-native-access=ALL-UNNAMED -cp "target/classes:target/lib/*" harness.cli.Main worker --once --crash-after 1 --visibility-ms 1000
+worker pid 27743 · lease 1000 ms · max receives 3 · once · harness.db
+received r-e50c: attempt 1 · agent support · "Where is my shipment SHP-1?"
+  1  LLM   pass 1 -> ToolCall[toolName=shipping_status, input={shipmentId=SHP-1}]  [OK 3 ms]
+crash: exit 3 right after row 1 of run r-e50c was persisted (simulated) · handler calls: none
+$ sleep 1
+$ java --enable-native-access=ALL-UNNAMED -cp "target/classes:target/lib/*" harness.cli.Main worker --once --crash-after 1 --visibility-ms 1000
+worker pid 27748 · lease 1000 ms · max receives 3 · once · harness.db
+received again: attempt 2, lease had expired · r-e50c resumes from step 1
+  2  NOTE  resumed from step 1  [OK 0 ms]
+crash: exit 3 right after row 2 of run r-e50c was persisted (simulated) · handler calls: none
+$ sleep 1
+$ java --enable-native-access=ALL-UNNAMED -cp "target/classes:target/lib/*" harness.cli.Main worker --once --crash-after 1 --visibility-ms 1000
+worker pid 27751 · lease 1000 ms · max receives 3 · once · harness.db
+received again: attempt 3, lease had expired · r-e50c resumes from step 2
+  3  NOTE  resumed from step 2  [OK 0 ms]
+crash: exit 3 right after row 3 of run r-e50c was persisted (simulated) · handler calls: none
+$ sleep 1
+(three receives, three dead workers; max receives is 3, so the fourth receive does not deliver the message: it dead-letters the job)
+$ java --enable-native-access=ALL-UNNAMED -cp "target/classes:target/lib/*" harness.cli.Main worker --once
+worker pid 27756 · lease 2000 ms · max receives 3 · once · harness.db
+dead-lettered r-e50c: received 4 times, more than max 3 · DEAD in harness.db after 3 attempts
+$ curl -s http://localhost:50352/dlq
+[ {
+  "id" : "r-e50c",
+  "conversationId" : "r-e50c",
+  "agent" : "support",
+  "question" : "Where is my shipment SHP-1?",
+  "status" : "DEAD",
+  "claimedBy" : "27751",
+  "attempts" : 3,
+  "createdAt" : 1792031800687,
+  "updatedAt" : 1792031805890
+} ]
+```
+
+The first worker's last row is 2 and its exit is 3; the second says `received again: attempt 2,
+lease had expired`, writes `resumed from step 2` as row 3 and asks the model only for pass 2:
+`handler calls: none`, the saved tool call did not run again. The dead-letter job took three
+workers, each dying after its own first row, and the fourth receive set it `DEAD`.
 
 ## Agents and tools are data
 
@@ -280,27 +384,32 @@ The golden set `evals/golden.json` is a list of `{ question, agent, expectTools,
 
 ## The store: `harness.db`
 
-One SQLite file, created on first use, gitignored. Two tables: `job` (`id`, `conversation_id`,
-`agent`, `question`, `status`, `created_at`, `updated_at`) and `step` (`job_id`, `step`, `turn`,
-`pass`, `kind`, `request`, `response`, `status`, `ms`, `attrs` as JSON text). The job row is
-`RUNNING` while the loop runs, `DONE` at the end, `FAILED` if the loop threw; a process that dies
-leaves it `RUNNING`. `sqlite3 harness.db` opens it if you want to look.
+One SQLite file, created on first use, gitignored. Three tables: `job` (`id`, `conversation_id`,
+`agent`, `question`, `status`, `claimed_by`, `attempts`, `created_at`, `updated_at`), `step`
+(`job_id`, `step`, `turn`, `pass`, `kind`, `request`, `response`, `status`, `ms`, `attrs` as JSON
+text) and `queue` (`job_id`, `visible_at`, `receives`). The job row is `QUEUED` from `submit` or
+`POST /runs`, `RUNNING` once a worker claims it (its pid in `claimed_by`, `attempts` + 1), `DONE`
+at the end, `FAILED` if the loop threw, `DEAD` when the queue gave up on it; a worker that dies
+leaves it `RUNNING` and its message in the queue. A file from before the worker gets the two
+columns added on open. `sqlite3 harness.db` opens it if you want to look.
 
 ## Layout
 
 ```
 agents/*.json  tools/*.json  evals/golden.json  harness.db (gitignored)
 src/main/java/harness/
-  core/    Orchestrator, Conversation, Turn, Span, Context, Summarizer, RelaySummarizer, RunListener, ConsoleListener
+  core/    Orchestrator, Conversation, Turn, Span, Context, Summarizer, RelaySummarizer, RunListener, ConsoleListener, CrashAfter
   model/   LLMProxy, RuleBasedLLM, ModelReply, ToolCall, ToolCalls, Done
   tools/   Tool, ToolRegistry, ToolCaller, ToolResult, MatchingCondition, ToolLoader
   agent/   Agent, AgentLoader
-  store/   RunStore, Job, SqliteRunStore, InMemoryRunStore
+  store/   RunStore, Job, SqliteRunStore, InMemoryRunStore, RunQueue
   http/    HttpApi
+  worker/  Worker
   eval/    GoldenCase, EvalRunner, CaseResult
   cli/     Main
 ```
 
 What is simulated is labelled as such: `--slow` prints `(latency simulated)`, the crash flags
 print `(simulated)`, the model is a rule-based stub, and the timeout is a thread with a deadline,
-not a sandbox. The store and the HTTP server are real: one SQLite file, the JDK's `HttpServer`.
+not a sandbox. The store, the queue and the HTTP server are real: one SQLite file, a table with
+SQS's three calls, the JDK's `HttpServer`; a worker's crash is a real `System.exit(3)`.
