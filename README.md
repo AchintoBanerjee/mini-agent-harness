@@ -10,11 +10,19 @@ A small agent harness in plain Java 21: a loop that hands the state to a model, 
 
 ## Try it in two minutes
 
-Needs Java 21 or newer and Maven on the path.
+What you need:
+
+- Java 21 or newer (`java -version`). On JDK 24 or newer the demo adds `--enable-native-access=ALL-UNNAMED` for you; by hand, put it right after `java` or the SQLite driver prints a warning.
+- Maven 3.6 or newer (`mvn -version`). The first build downloads the two dependencies, Jackson and the SQLite driver, so the network is needed once.
+- `curl` and a bash shell: macOS or Linux as they come; on Windows, WSL.
+- Nothing for SQLite. The driver carries the library; `v2/harness.db` is created on first use and the demo starts from an empty one. The `sqlite3` command is only needed if you want to run the one query on the HLD page yourself.
+- Ports: the demo picks a free port. By hand, the server listens on `localhost:8080` (`--port` to change) and the worker pushes to it (`--api`).
 
 ```bash
 ./demo.sh
 ```
+
+About a minute for the first build, ten seconds of tests, under a minute for the demo.
 
 It compiles v2 and runs every command of the manual in order: a server and a worker, the agents and tools, a turn that chains two lookups and its stream, a hanging tool cut off, a repeated call deduped, two tools in one pass with the answer arriving word by word, the concierge handing a question to the logistics agent and the depth cap, a worker killed after its second row and the next one continuing the chain, the eval table with two failures left in on purpose, then the CLI that remains. [docs/demo-output.txt](docs/demo-output.txt) is the saved output of that script, so the whole demo can be read without running it.
 

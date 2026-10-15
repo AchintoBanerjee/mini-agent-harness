@@ -16,6 +16,8 @@ write-up is `../DESIGN.md`.
 
 ## Build and test
 
+You need Java 21 or newer, Maven 3.6 or newer, `curl` and a bash shell. Nothing for SQLite: the driver carries the library, and `harness.db` is created in this folder on first use. The first build downloads the two dependencies.
+
 ```
 cd v2
 mvn -q test       # 126 tests, about 10 s with Maven's own start; tests use the in-memory store or a temp SQLite file
