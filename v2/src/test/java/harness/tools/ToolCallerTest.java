@@ -109,4 +109,60 @@ class ToolCallerTest {
 
         assertTrue(interrupted.await(300, TimeUnit.MILLISECONDS), "cancel(true) must interrupt the tool's thread");
     }
+
+    @Test
+    void callAllRunsTheCallsTogetherAndAnswersInRequestOrder() {
+        ToolRegistry two = new ToolRegistry();
+        two.register(sleeper("first", 300));
+        two.register(sleeper("second", 300));
+        long started = System.nanoTime();
+
+        List<ToolResult> results = new ToolCaller(two).callAll(List.of(
+                new ToolCall("first", Map.of()), new ToolCall("second", Map.of())));
+
+        long wall = (System.nanoTime() - started) / 1_000_000;
+        assertEquals(List.of("first: slept 300 ms", "second: slept 300 ms"),
+                results.stream().map(ToolResult::output).toList());
+        assertTrue(wall < 500, "two 300 ms tools ran together, wall " + wall + " ms");
+        assertTrue(results.get(0).ms() >= 250 && results.get(1).ms() >= 250, "each result carries its own time: " + results);
+    }
+
+    @Test
+    void aThrowingSiblingLeavesTheOtherIntact() {
+        List<ToolResult> results = caller.callAll(List.of(
+                new ToolCall("throw_boom", Map.of()), new ToolCall("order_status", Map.of("orderId", "ORD-1"))));
+
+        assertEquals(Span.Status.ERROR, results.get(0).status());
+        assertEquals("Tool failed: boom", results.get(0).output());
+        assertEquals(Span.Status.OK, results.get(1).status());
+        assertEquals("Order ORD-1: SHIPPED, shipment SHP-1", results.get(1).output());
+    }
+
+    @Test
+    void aHangingSiblingTimesOutAloneAndOnItsOwnDeadline() {
+        ToolCaller impatient = new ToolCaller(registry, List.of("hang_forever", "order_status"), Duration.ofMillis(300));
+        long started = System.nanoTime();
+
+        List<ToolResult> results = impatient.callAll(List.of(
+                new ToolCall("hang_forever", Map.of("orderId", "ORD-1")), new ToolCall("order_status", Map.of("orderId", "ORD-1"))));
+
+        long wall = (System.nanoTime() - started) / 1_000_000;
+        assertEquals(Span.Status.TIMEOUT, results.get(0).status());
+        assertEquals("cut off after 300 ms", results.get(0).output());
+        assertEquals(300, results.get(0).ms(), "a cut-off call is charged the time it was allowed");
+        assertEquals(Span.Status.OK, results.get(1).status());
+        assertEquals("Order ORD-1: SHIPPED, shipment SHP-1", results.get(1).output());
+        assertTrue(wall < 600, "the batch ends at the hang's deadline, wall " + wall + " ms");
+    }
+
+    private static Tool sleeper(String name, long ms) {
+        return new Tool(name, "sleeps " + ms + " ms", "x", null, new MatchingCondition(List.of(name), null), input -> {
+            try {
+                Thread.sleep(ms);
+            } catch (InterruptedException e) {
+                throw new IllegalStateException("interrupted");
+            }
+            return name + ": slept " + ms + " ms";
+        });
+    }
 }

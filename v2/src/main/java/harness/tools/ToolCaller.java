@@ -3,6 +3,7 @@ package harness.tools;
 import harness.core.Span;
 import harness.model.ToolCall;
 import java.time.Duration;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
 import java.util.Set;
@@ -14,11 +15,11 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 
 /**
- * Runs one tool call and returns its output. Never throws and never hangs: a registered
- * tool the agent did not list is DENIED without running, a call that outlives the timeout
- * is cancelled and reported as TIMEOUT, and anything a tool throws becomes an ERROR
- * result. Each call runs on one long-lived virtual-thread executor owned by this caller;
- * it is never closed on the call path, so a cut-off tool cannot take the next call down.
+ * Runs tool calls, one or several together. Never throws and never hangs: a tool the agent
+ * did not list is DENIED without running, a call that outlives the timeout is cancelled and
+ * reported as TIMEOUT, anything a tool throws becomes an ERROR result, and each result
+ * carries its own call's time. Every call runs on one long-lived virtual-thread executor
+ * owned by this caller, never closed on the call path: a cut-off tool cannot take the next down.
  */
 public class ToolCaller {
 
@@ -43,25 +44,53 @@ public class ToolCaller {
     }
 
     public ToolResult call(ToolCall call) {
+        return await(executor.submit(() -> run(call)), System.nanoTime());
+    }
+
+    /** Runs the calls together, each within the timeout from this submission; results come back in request order. */
+    public List<ToolResult> callAll(List<ToolCall> calls) {
+        long submitted = System.nanoTime();
+        List<Future<ToolResult>> futures = new ArrayList<>();
+        for (ToolCall call : calls) {
+            futures.add(executor.submit(() -> run(call)));
+        }
+        List<ToolResult> results = new ArrayList<>();
+        for (Future<ToolResult> future : futures) {
+            results.add(await(future, submitted));
+        }
+        return results;
+    }
+
+    /** On the executor: gate the call, run the handler, time it. Never throws. */
+    private ToolResult run(ToolCall call) {
         Optional<Tool> tool = registry.find(call.toolName());
         if (tool.isEmpty()) {
-            return new ToolResult("Unknown tool: " + call.toolName(), Span.Status.ERROR);
+            return new ToolResult("Unknown tool: " + call.toolName(), Span.Status.ERROR, 0);
         }
         if (!allowed.contains(call.toolName())) {
-            return new ToolResult("not in this agent's tool list", Span.Status.DENIED);
+            return new ToolResult("not in this agent's tool list", Span.Status.DENIED, 0);
         }
-        Future<String> future = executor.submit(() -> tool.get().run(call.input()));
+        long started = System.nanoTime();
         try {
-            return new ToolResult(future.get(timeout.toMillis(), TimeUnit.MILLISECONDS), Span.Status.OK);
+            return new ToolResult(tool.get().run(call.input()), Span.Status.OK, Span.millisSince(started));
+        } catch (Throwable thrown) {
+            return new ToolResult("Tool failed: " + message(thrown), Span.Status.ERROR, Span.millisSince(started));
+        }
+    }
+
+    /** Waits for the call until its deadline (submission + timeout); past it the call is cancelled. */
+    private ToolResult await(Future<ToolResult> future, long submittedNanos) {
+        try {
+            return future.get(Math.max(timeout.toNanos() - (System.nanoTime() - submittedNanos), 0), TimeUnit.NANOSECONDS);
         } catch (TimeoutException e) {
             future.cancel(true);
-            return new ToolResult("cut off after " + timeout.toMillis() + " ms", Span.Status.TIMEOUT);
+            return new ToolResult("cut off after " + timeout.toMillis() + " ms", Span.Status.TIMEOUT, timeout.toMillis());
         } catch (ExecutionException e) {
-            return new ToolResult("Tool failed: " + message(e.getCause()), Span.Status.ERROR);
+            return new ToolResult("Tool failed: " + message(e.getCause()), Span.Status.ERROR, 0);
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
             future.cancel(true);
-            return new ToolResult("Tool failed: the caller was interrupted", Span.Status.ERROR);
+            return new ToolResult("Tool failed: the caller was interrupted", Span.Status.ERROR, 0);
         }
     }
 

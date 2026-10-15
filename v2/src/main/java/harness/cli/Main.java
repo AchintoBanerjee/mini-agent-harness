@@ -24,11 +24,12 @@ import java.util.List;
 
 /**
  * Command line, run from v2/: agents · tools · run --agent X "question" ["question" ...]
- * [--crash-after N] [--crash-before-persist] · resume runId · replay runId [fromStep].
+ * [--slow] [--crash-after N] [--crash-before-persist] · resume runId · replay runId [fromStep].
  * Args are parsed by hand. Agents and tools are read from agents/ and tools/; every run
  * is logged to runs/. The two crash flags simulate a process dying mid-run so that
- * resume has something to pick up. Tool calls are gated by the agent: only its listed
- * tools run, each within its toolTimeoutMs.
+ * resume has something to pick up; --slow gives every lookup 300 ms of simulated latency
+ * so that tools running together can be seen to overlap. Tool calls are gated by the
+ * agent: only its listed tools run, each within its toolTimeoutMs.
  */
 public class Main {
 
@@ -82,6 +83,9 @@ public class Main {
                 crashAfter = positive(args.get(++i), "--crash-after");
             } else if (arg.equals("--crash-before-persist")) {
                 crashBeforePersist = true;
+            } else if (arg.equals("--slow")) {
+                ToolLoader.SLOW_LOOKUP_MS = 300;
+                System.out.println("slow: every lookup sleeps 300 ms before answering (latency simulated)");
             } else if (arg.startsWith("--")) {
                 fail("unknown option " + arg);
             } else {
@@ -89,7 +93,7 @@ public class Main {
             }
         }
         if (agentName == null || questions.isEmpty()) {
-            fail("usage: run --agent <name> \"question\" [\"question\" ...] [--crash-after N] [--crash-before-persist]");
+            fail("usage: run --agent <name> \"question\" [\"question\" ...] [--slow] [--crash-after N] [--crash-before-persist]");
         }
 
         Agent agent = findAgent(agentName);
@@ -218,7 +222,7 @@ public class Main {
     }
 
     static void usage() {
-        fail("usage: agents | tools | run --agent <name> \"question\" [\"question\" ...] [--crash-after N] [--crash-before-persist]"
+        fail("usage: agents | tools | run --agent <name> \"question\" [\"question\" ...] [--slow] [--crash-after N] [--crash-before-persist]"
                 + " | resume <runId> | replay <runId> [fromStep]");
     }
 

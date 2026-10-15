@@ -26,4 +26,9 @@ public record Span(
     public Span(Kind kind, String request, String response) {
         this("", 0, 0, 0, kind, request, response, Status.OK, 0, Map.of());
     }
+
+    /** The ms a row carries: whole milliseconds since a System.nanoTime() reading. */
+    public static long millisSince(long startedNanos) {
+        return (System.nanoTime() - startedNanos) / 1_000_000;
+    }
 }

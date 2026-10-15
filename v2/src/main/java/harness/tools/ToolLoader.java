@@ -32,6 +32,9 @@ public class ToolLoader {
      */
     public static final Map<String, Integer> HANDLER_CALLS = new ConcurrentHashMap<>();
 
+    /** --slow: every lookup sleeps this long before answering, so overlap shows (latency simulated). */
+    public static volatile long SLOW_LOOKUP_MS = 0;
+
     /** "order_status=2, stock_status=1" in name order, or "none". */
     public static String handlerCalls() {
         if (HANDLER_CALLS.isEmpty()) {
@@ -97,6 +100,9 @@ public class ToolLoader {
         String notFound = required(node, "notFound", file).asText();
         return input -> {
             HANDLER_CALLS.merge(name, 1, Integer::sum);
+            if (SLOW_LOOKUP_MS > 0) {
+                sleep(SLOW_LOOKUP_MS).apply(input);
+            }
             String id = input.getOrDefault(inputField, "");
             String value = data.get(id);
             if (value == null) {

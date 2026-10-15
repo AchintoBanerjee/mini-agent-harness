@@ -65,4 +65,14 @@ class RuleBasedLLMTest {
 
         assertEquals(new ToolCall("throw_boom", Map.of()), reply);
     }
+
+    @Test
+    void aQuestionThatFitsTwoToolsComesBackAsOneBatchInToolOrder() {
+        ModelReply reply = llm.next(new Context("Status of order ORD-2 and is product PRD-1 available?", List.of()), tools);
+
+        assertEquals(new ToolCalls(List.of(
+                new ToolCall("order_status", Map.of("orderId", "ORD-2")),
+                new ToolCall("stock_status", Map.of("productId", "PRD-1")))), reply);
+        assertEquals(2, reply.calls().size());
+    }
 }

@@ -14,26 +14,25 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.Set;
 
 /**
- * Owns the loop. Each question becomes a Turn: ask the model, run the tool it names,
- * record both as rows, repeat until the model says Done, then summarize. The agent's
- * maxPasses caps the loop; hitting the cap leaves a NOTE row instead of a silent stop.
- * Every row is written to the store before the loop acts on it: the LLM row before the
- * tool runs, the TOOL row before the model is asked again. The LLM row's attrs carry the
- * decided call, so a run that died between two rows can be resumed from the log without
- * asking the model again for a decision it already made.
+ * Owns the loop. Each question becomes a Turn: ask the model, run the tool or tools it
+ * names (several in one reply run together, rows in request order), record each as a row,
+ * repeat until the model says Done, then summarize. The agent's maxPasses caps the loop;
+ * hitting the cap leaves a NOTE row instead of a silent stop. Every row is written to the
+ * store before the loop acts on it: the LLM row before the tools run, the TOOL rows before
+ * the model is asked again. The LLM row's attrs carry the decided calls, so a run that died
+ * between two rows resumes from the log without asking the model again for that decision.
  */
 public class Orchestrator {
 
-    /** Attrs keys. The question is on every LLM row; tool + its input fields name a decided call. */
+    /** Attrs keys. The question is on every LLM row; tool (comma-joined when several) + input fields name the decided calls. */
     static final String QUESTION = "question";
     static final String TOOL = "tool";
     static final String KEY = "key";
-    private static final Set<String> NOT_INPUT = Set.of(QUESTION, TOOL, KEY);
 
     private final Agent agent;
+    private final ToolRegistry registry;
     private final List<Tool> tools = new ArrayList<>();
     private final LLMProxy llm;
     private final ToolCaller toolCaller;
@@ -55,6 +54,7 @@ public class Orchestrator {
             tools.add(registry.require(name));
         }
         this.agent = agent;
+        this.registry = registry;
         this.llm = llm;
         this.toolCaller = toolCaller;
         this.summarizer = summarizer;
@@ -73,8 +73,8 @@ public class Orchestrator {
 
     /**
      * Picks a run up where its log ends. Rebuilds the turns from the rows; if the last
-     * decision has a tool call with no TOOL row after it, that call runs first (the model
-     * is not asked again for it), then the loop continues at the next pass. A run whose
+     * decision has calls with no TOOL row after them, those run first, in order (the model
+     * is not asked again for them), then the loop continues at the next pass. A run whose
      * last row already closed it (Done, or the maxPasses cut) gets its answer back unchanged.
      */
     public String resume(String runId) {
@@ -124,9 +124,9 @@ public class Orchestrator {
                 toolRowsAfter++;
             }
         }
-        int calls = decided.attrs().containsKey(TOOL) ? 1 : 0; // one call per LLM row today
-        if (toolRowsAfter < calls) {
-            runTool(turn, turnNo, decided.pass(), toolCall(decided), runId + "/" + decided.step());
+        List<ToolCall> calls = decided.attrs().containsKey(TOOL) ? decidedCalls(decided) : List.of();
+        if (toolRowsAfter < calls.size()) {
+            runCalls(turn, turnNo, decided.pass(), calls.subList(toolRowsAfter, calls.size()), decided.step());
         }
         return loop(turn, turnNo, decided.pass() + 1);
     }
@@ -142,13 +142,14 @@ public class Orchestrator {
         for (int pass = fromPass; pass <= maxPasses; pass++) {
             long started = System.nanoTime();
             ModelReply reply = llm.next(new Context(turn.question(), List.copyOf(turn.spans())), tools);
+            List<ToolCall> calls = reply.calls();
             record(turn, turnNo, pass, Span.Kind.LLM, "pass " + pass, reply.toString(),
-                    Span.Status.OK, millisSince(started), decided(turn.question(), reply));
+                    Span.Status.OK, Span.millisSince(started), decided(turn.question(), calls));
 
-            if (!(reply instanceof ToolCall call)) {
+            if (calls.isEmpty()) {
                 return finish(turn);
             }
-            runTool(turn, turnNo, pass, call, conversation.id() + "/" + steps);
+            runCalls(turn, turnNo, pass, calls, steps);
         }
 
         record(turn, turnNo, maxPasses, Span.Kind.NOTE, "cut short at maxPasses=" + maxPasses, "",
@@ -156,34 +157,52 @@ public class Orchestrator {
         return finish(turn);
     }
 
-    /** Runs one call and records its TOOL row. The key names the LLM row that decided the call. */
-    private void runTool(Turn turn, int turnNo, int pass, ToolCall call, String key) {
+    /**
+     * Runs the calls (together when several) and records one TOOL row each, in request
+     * order, with that call's own time; a batch also leaves a NOTE row: wall against work.
+     */
+    private void runCalls(Turn turn, int turnNo, int pass, List<ToolCall> calls, int decidingStep) {
         long started = System.nanoTime();
-        ToolResult result = toolCaller.call(call);
-        Map<String, String> attrs = new LinkedHashMap<>();
-        attrs.put(TOOL, call.toolName());
-        attrs.putAll(call.input());
-        attrs.put(KEY, key);
-        record(turn, turnNo, pass, Span.Kind.TOOL, call.toolName() + " " + call.input(),
-                result.output(), result.status(), millisSince(started), attrs);
+        List<ToolResult> results = calls.size() == 1 ? List.of(toolCaller.call(calls.get(0))) : toolCaller.callAll(calls);
+        long wall = Span.millisSince(started);
+        long work = 0;
+        for (int i = 0; i < calls.size(); i++) {
+            ToolCall call = calls.get(i);
+            ToolResult result = results.get(i);
+            work += result.ms();
+            Map<String, String> attrs = new LinkedHashMap<>();
+            attrs.put(TOOL, call.toolName());
+            attrs.putAll(call.input());
+            attrs.put(KEY, conversation.id() + "/" + decidingStep);
+            record(turn, turnNo, pass, Span.Kind.TOOL, call.toolName() + " " + call.input(),
+                    result.output(), result.status(), result.ms(), attrs);
+        }
+        if (calls.size() > 1) {
+            record(turn, turnNo, pass, Span.Kind.NOTE, "ran " + calls.size() + " tools together: wall "
+                    + wall + " ms, work " + work + " ms", "", Span.Status.OK, wall, Map.of());
+        }
     }
 
-    /** What the LLM row remembers: the question, and the call if the model asked for one. */
-    private static Map<String, String> decided(String question, ModelReply reply) {
+    /** What the LLM row remembers: the question, and the calls if the model asked for any. */
+    private static Map<String, String> decided(String question, List<ToolCall> calls) {
         Map<String, String> attrs = new LinkedHashMap<>();
         attrs.put(QUESTION, question);
-        if (reply instanceof ToolCall call) {
-            attrs.put(TOOL, call.toolName());
+        for (ToolCall call : calls) {
+            attrs.merge(TOOL, call.toolName(), (names, name) -> names + "," + name);
             attrs.putAll(call.input());
         }
         return attrs;
     }
 
-    /** The call an LLM row decided, read back from its attrs. */
-    private static ToolCall toolCall(Span llmRow) {
-        Map<String, String> input = new LinkedHashMap<>(llmRow.attrs());
-        input.keySet().removeAll(NOT_INPUT);
-        return new ToolCall(llmRow.attrs().get(TOOL), input);
+    /** The calls an LLM row decided, read back from its attrs: each tool takes its own input field. */
+    private List<ToolCall> decidedCalls(Span llmRow) {
+        List<ToolCall> calls = new ArrayList<>();
+        for (String name : llmRow.attrs().get(TOOL).split(",")) {
+            String field = registry.find(name).map(Tool::inputField).orElse(null);
+            String value = field == null ? null : llmRow.attrs().get(field);
+            calls.add(new ToolCall(name, value == null ? Map.of() : Map.of(field, value)));
+        }
+        return calls;
     }
 
     /** Write, then act: the row is in the store and announced before the loop takes its next step. */
@@ -200,9 +219,5 @@ public class Orchestrator {
         String answer = summarizer.summarize(turn);
         turn.setAnswer(answer);
         return answer;
-    }
-
-    private static long millisSince(long startedNanos) {
-        return (System.nanoTime() - startedNanos) / 1_000_000;
     }
 }
