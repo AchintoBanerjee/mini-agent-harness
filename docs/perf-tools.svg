@@ -1,7 +1,7 @@
-<svg viewBox="0 0 1120 455" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:1120px;font-family:-apple-system,Segoe UI,Roboto,sans-serif;font-size:12px">
+<svg viewBox="0 0 1120 535" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:1120px;font-family:-apple-system,Segoe UI,Roboto,sans-serif;font-size:12px">
 <defs><marker id="ah" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#1a1f2b"/></marker><marker id="ahb" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#0f6cbd"/></marker></defs>
 <style>.b{fill:#fff;stroke:#1a1f2b;stroke-width:1.4;rx:8}.s{fill:#f1f0ec;stroke:#1a1f2b;stroke-width:1.2;rx:8}.o{fill:#eef1f5;stroke:#0f6cbd;stroke-width:1.6;rx:8}.mt{fill:#fbe6d2;stroke:#a85713;stroke-width:1.6;rx:8}.wx{fill:#f8e3e4;stroke:#b0222b;stroke-width:1.6;rx:8}.h{fill:#1a1f2b;font-weight:600}.m{fill:#5b6472;font-size:10px}.y{fill:#6b7280;font-size:9.5px;font-weight:700;letter-spacing:.08em}.rx{fill:#b0222b;font-size:10px;font-weight:600}.bx{fill:#0f6cbd;font-size:10px;font-weight:600}.l{stroke:#1a1f2b;stroke-width:1.3;marker-end:url(#ah)}.p{fill:none;stroke:#1a1f2b;stroke-width:1.3;marker-end:url(#ah)}.d{stroke:#0f6cbd;stroke-width:1.3;stroke-dasharray:5 4;marker-end:url(#ahb);fill:none}</style>
-<rect width="1120" height="455" fill="#fff"/>
+<rect width="1120" height="535" fill="#fff"/>
 <text class="y" x="15" y="14">TOOLS IN HUNDREDS — PROGRESSIVE TOOL DISCOVERY: ONE SEARCH TOOL IN THE PROMPT, THE CATALOG AND THE INDEX BEHIND IT</text>
 
 <rect class="wx" x="15" y="40" width="160" height="78"/>
@@ -18,56 +18,77 @@
 <line class="l" x1="300" y1="168" x2="300" y2="94"/><line class="l" x1="330" y1="94" x2="330" y2="168"/>
 <text class="m" x="342" y="116">① call 1 · tools = [search_tools + pinned]</text>
 <text class="m" x="342" y="151">② search_tools("refund an order")</text>
-<line class="l" x1="600" y1="168" x2="600" y2="94"/><line class="l" x1="630" y1="94" x2="630" y2="168"/>
-<text class="m" x="642" y="116">④ call 2 · tools += refund_order {…}</text>
-<text class="m" x="642" y="151">⑤ refund_order(ORD-1, …)</text>
-<line class="l" x1="880" y1="168" x2="880" y2="94"/><line class="l" x1="910" y1="94" x2="910" y2="168"/>
-<text class="m" x="922" y="116">⑦ call 3 · messages += result</text>
-<text class="m" x="922" y="151">⑧ the answer → user</text>
+<line class="l" x1="905" y1="168" x2="905" y2="94"/><line class="l" x1="935" y1="94" x2="935" y2="168"/>
+<text class="m" x="893" y="116" text-anchor="end">④ call 2 · tools += refund_order {orderId, reason}</text>
+<text class="m" x="893" y="151" text-anchor="end">⑤ refund_order(ORD-1, reason: …)</text>
+<line class="l" x1="990" y1="168" x2="990" y2="94"/><line class="l" x1="1020" y1="94" x2="1020" y2="168"/>
+<text class="m" x="1032" y="110">⑦ call 3</text><text class="m" x="1032" y="122">+ the result</text>
+<text class="m" x="1032" y="146">⑧ the answer</text><text class="m" x="1032" y="158">→ user</text>
 
-<rect class="b" x="15" y="215" width="160" height="56"/>
-<text class="h" x="95" y="236" text-anchor="middle">User</text>
-<text class="m" x="95" y="252" text-anchor="middle">"refund order ORD-1"</text>
-<line class="l" x1="175" y1="243" x2="198" y2="243"/>
+<rect class="b" x="15" y="222" width="160" height="56"/>
+<text class="h" x="95" y="243" text-anchor="middle">User</text>
+<text class="m" x="95" y="259" text-anchor="middle">"refund order ORD-1"</text>
+<line class="l" x1="175" y1="250" x2="198" y2="250"/>
 
-<rect class="o" x="200" y="170" width="900" height="175"/>
+<rect class="o" x="200" y="170" width="900" height="254"/>
 <text class="h" x="215" y="190">Orchestrator</text>
-<text class="m" x="310" y="190">the loop dispatches every returned tool call by name: search_tools is answered here, every other name goes to the tool client</text>
+<text class="m" x="310" y="190">the loop dispatches every returned tool call by name: search_tools → the handler below · any other name → the tool client</text>
 
-<rect class="o" x="215" y="205" width="230" height="75"/>
-<text class="h" x="330" y="226" text-anchor="middle">search_tools handler</text>
-<text class="m" x="330" y="243" text-anchor="middle">answers ③ itself: no model, no server</text>
-<text class="m" x="330" y="257" text-anchor="middle">index lookup → names and one-liners</text>
-<text class="m" x="330" y="271" text-anchor="middle">copies the found definitions into call 2</text>
+<rect class="o" x="215" y="200" width="870" height="92"/>
+<text class="h" x="225" y="216">search_tools handler</text>
+<text class="m" x="372" y="216">answers ③ in four steps, no model call and no server call</text>
 
-<path class="s" d="M489,214 a80,9 0 0 1 160,0 v52 a80,9 0 0 1 -160,0 z"/><path d="M489,214 a80,9 0 0 0 160,0" fill="none" stroke="#1a1f2b" stroke-width="1.2"/>
-<text class="h" x="569" y="240" text-anchor="middle">Index</text>
-<text class="m" x="569" y="256" text-anchor="middle">name · description · params</text>
-<text class="m" x="569" y="270" text-anchor="middle">built once, at registration</text>
+<rect class="b" x="225" y="226" width="170" height="58"/>
+<text class="h" x="310" y="244" text-anchor="middle">1 · the query</text>
+<text class="m" x="310" y="259" text-anchor="middle">the model's search call</text>
+<text class="m" x="310" y="273" text-anchor="middle">carries the intent: "refund an order"</text>
 
-<path class="s" d="M693,214 a80,9 0 0 1 160,0 v52 a80,9 0 0 1 -160,0 z"/><path d="M693,214 a80,9 0 0 0 160,0" fill="none" stroke="#1a1f2b" stroke-width="1.2"/>
-<text class="h" x="773" y="240" text-anchor="middle">Catalog</text>
-<text class="m" x="773" y="256" text-anchor="middle">300 full definitions</text>
-<text class="m" x="773" y="270" text-anchor="middle">parameters included</text>
+<rect class="b" x="417" y="226" width="225" height="58"/>
+<text class="h" x="529" y="244" text-anchor="middle">2 · match it to a tool</text>
+<text class="m" x="529" y="259" text-anchor="middle">semantic + keyword over name + description</text>
+<text class="m" x="529" y="273" text-anchor="middle">rerank top few: decision model / small LLM</text>
 
-<rect class="o" x="897" y="205" width="188" height="75"/>
-<text class="h" x="991" y="226" text-anchor="middle">loaded_tools</text>
-<text class="m" x="991" y="243" text-anchor="middle">names found in this conversation</text>
-<text class="m" x="991" y="257" text-anchor="middle">saved with the conversation</text>
-<text class="m" x="991" y="271" text-anchor="middle">the next turn needs no search</text>
+<rect class="b" x="664" y="226" width="200" height="58"/>
+<text class="h" x="764" y="244" text-anchor="middle">3 · pull the definition</text>
+<text class="m" x="764" y="259" text-anchor="middle">from the catalog, with its params</text>
+<text class="m" x="764" y="273" text-anchor="middle">refund_order {orderId, reason}</text>
 
-<line class="l" x1="445" y1="243" x2="487" y2="243"/><text class="m" x="466" y="236" text-anchor="middle">③a</text>
-<line class="l" x1="649" y1="243" x2="691" y2="243"/><text class="m" x="670" y="236" text-anchor="middle">③b</text>
-<line class="l" x1="853" y1="243" x2="895" y2="243"/><text class="m" x="874" y="236" text-anchor="middle">③c</text>
+<rect class="b" x="886" y="226" width="189" height="58"/>
+<text class="h" x="980" y="244" text-anchor="middle">4 · send it back</text>
+<text class="m" x="980" y="259" text-anchor="middle">tools[] of call 2 += the definition</text>
+<text class="m" x="980" y="273" text-anchor="middle">name kept in loaded_tools</text>
 
-<rect class="b" x="215" y="293" width="870" height="42"/>
-<text class="h" x="650" y="311" text-anchor="middle">Tool client</text>
-<text class="m" x="650" y="327" text-anchor="middle">tools/call as the user, exactly as today · ⑥</text>
+<line class="l" x1="395" y1="255" x2="415" y2="255"/>
+<line class="l" x1="642" y1="255" x2="662" y2="255"/>
+<line class="l" x1="864" y1="255" x2="884" y2="255"/>
 
-<line class="l" x1="420" y1="388" x2="420" y2="347"/><text class="m" x="432" y="372">⓪ tools/list, once at registration → catalog + index</text>
-<line class="l" x1="800" y1="347" x2="800" y2="388"/><text class="m" x="812" y="372">⑥ tools/call</text>
+<path class="s" d="M417,306 a112.5,9 0 0 1 225,0 v50 a112.5,9 0 0 1 -225,0 z"/><path d="M417,306 a112.5,9 0 0 0 225,0" fill="none" stroke="#1a1f2b" stroke-width="1.2"/>
+<text class="h" x="529" y="328" text-anchor="middle">Index</text>
+<text class="m" x="529" y="343" text-anchor="middle">name · description · params</text>
+<text class="m" x="529" y="355" text-anchor="middle">built once, at registration</text>
 
-<rect class="s" x="200" y="390" width="900" height="52"/>
-<text class="h" x="215" y="411">Tool servers</text>
-<text class="m" x="215" y="428">300 tools · answer tools/list and tools/call · never see search_tools</text>
+<path class="s" d="M664,306 a100,9 0 0 1 200,0 v50 a100,9 0 0 1 -200,0 z"/><path d="M664,306 a100,9 0 0 0 200,0" fill="none" stroke="#1a1f2b" stroke-width="1.2"/>
+<text class="h" x="764" y="328" text-anchor="middle">Catalog</text>
+<text class="m" x="764" y="343" text-anchor="middle">300 full definitions</text>
+<text class="m" x="764" y="355" text-anchor="middle">parameters included</text>
+
+<rect class="o" x="886" y="306" width="189" height="58"/>
+<text class="h" x="980" y="326" text-anchor="middle">loaded_tools</text>
+<text class="m" x="980" y="341" text-anchor="middle">names found in this conversation</text>
+<text class="m" x="980" y="355" text-anchor="middle">saved with it · no search next turn</text>
+
+<line class="l" x1="529" y1="304" x2="529" y2="286"/>
+<line class="l" x1="764" y1="304" x2="764" y2="286"/>
+<line class="l" x1="980" y1="286" x2="980" y2="304"/>
+
+<rect class="b" x="215" y="380" width="870" height="34"/>
+<text class="h" x="225" y="401">Tool client</text>
+<text class="m" x="310" y="401">⑤ a name that is not search_tools → tools/call as the user, exactly as today → ⑥</text>
+
+<line class="l" x1="420" y1="468" x2="420" y2="426"/><text class="m" x="432" y="451">⓪ tools/list, once at registration → catalog + index</text>
+<line class="l" x1="800" y1="426" x2="800" y2="468"/><text class="m" x="812" y="451">⑥ tools/call</text>
+
+<rect class="s" x="200" y="470" width="900" height="52"/>
+<text class="h" x="215" y="491">Tool servers</text>
+<text class="m" x="215" y="508">300 tools · answer tools/list and tools/call · never see search_tools</text>
 </svg>
