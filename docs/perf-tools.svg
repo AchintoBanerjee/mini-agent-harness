@@ -1,22 +1,73 @@
-<svg viewBox="0 0 1120 330" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:1120px;font-family:-apple-system,Segoe UI,Roboto,sans-serif;font-size:12px">
+<svg viewBox="0 0 1120 455" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:1120px;font-family:-apple-system,Segoe UI,Roboto,sans-serif;font-size:12px">
 <defs><marker id="ah" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#1a1f2b"/></marker><marker id="ahb" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#0f6cbd"/></marker></defs>
 <style>.b{fill:#fff;stroke:#1a1f2b;stroke-width:1.4;rx:8}.s{fill:#f1f0ec;stroke:#1a1f2b;stroke-width:1.2;rx:8}.o{fill:#eef1f5;stroke:#0f6cbd;stroke-width:1.6;rx:8}.mt{fill:#fbe6d2;stroke:#a85713;stroke-width:1.6;rx:8}.wx{fill:#f8e3e4;stroke:#b0222b;stroke-width:1.6;rx:8}.h{fill:#1a1f2b;font-weight:600}.m{fill:#5b6472;font-size:10px}.y{fill:#6b7280;font-size:9.5px;font-weight:700;letter-spacing:.08em}.rx{fill:#b0222b;font-size:10px;font-weight:600}.bx{fill:#0f6cbd;font-size:10px;font-weight:600}.l{stroke:#1a1f2b;stroke-width:1.3;marker-end:url(#ah)}.p{fill:none;stroke:#1a1f2b;stroke-width:1.3;marker-end:url(#ah)}.d{stroke:#0f6cbd;stroke-width:1.3;stroke-dasharray:5 4;marker-end:url(#ahb);fill:none}</style>
-<rect width="1120" height="330" fill="#fff"/>
-<text class="y" x="15" y="14">TOOLS IN THE HUNDREDS — EVERY DEFINITION RIDES IN EVERY MODEL CALL UNLESS THE HARNESS CHOOSES</text>
-<text class="rx" x="15" y="42">TODAY — load everything</text>
-<rect class="s" x="15" y="50" width="200" height="70"/><text class="h" x="115" y="72" text-anchor="middle">Tool servers · native tools</text><text class="m" x="115" y="88" text-anchor="middle">MCP tools/list, live, every turn</text><text class="m" x="115" y="102" text-anchor="middle">300 definitions</text>
-<rect class="wx" x="265" y="50" width="200" height="70"/><text class="h" x="365" y="72" text-anchor="middle">every model call</text><text class="m" x="365" y="88" text-anchor="middle">300 definitions · about 150k tokens</text><text class="m" x="365" y="102" text-anchor="middle">before the model reads the question</text>
-<line class="l" x1="215" y1="85" x2="263" y2="85"/>
-<text class="m" x="15" y="145">past a few dozen tools the model mis-picks among look-alikes; the tokens are paid on every call of every turn</text>
-<text class="bx" x="600" y="42">THE DESIGN — a catalog, an index, one search tool</text>
-<rect class="s" x="600" y="50" width="160" height="56"/><text class="h" x="680" y="70" text-anchor="middle">Tool servers</text><text class="m" x="680" y="86" text-anchor="middle">listed once, at registration</text>
-<rect class="o" x="800" y="50" width="160" height="56"/><text class="h" x="880" y="70" text-anchor="middle">Catalog + index</text><text class="m" x="880" y="86" text-anchor="middle">every definition, searchable</text>
-<rect class="o" x="600" y="140" width="200" height="70"/><text class="h" x="700" y="160" text-anchor="middle">each model call</text><text class="m" x="700" y="176" text-anchor="middle">3 to 5 pinned tools + search_tools</text><text class="m" x="700" y="190" text-anchor="middle">+ the definitions found so far</text>
-<rect class="o" x="860" y="140" width="240" height="70"/><text class="h" x="980" y="160" text-anchor="middle">Orchestrator answers the search</text><text class="m" x="980" y="176" text-anchor="middle">from the index: names and one-liners</text><text class="m" x="980" y="190" text-anchor="middle">loads the found definition for the next pass</text>
-<line class="l" x1="760" y1="78" x2="798" y2="78"/>
-<path class="p" d="M800,175 L858,175"/><text class="m" x="805" y="168">search('refund')</text>
-<path class="d" d="M980,210 L980,235 L700,235 L700,212"/><text class="m" x="720" y="248">the found definition joins the next call · remembered with the conversation</text>
-<text class="m" x="15" y="290">The trade: one extra model call the first time a capability is needed, then a handful of definitions on every call instead of hundreds. Under about ten tools, just load them.</text>
-<text class="m" x="15" y="306">Keep the found definition out of the cached prefix: append it as conversation content rather than rewriting the tools block, or the whole prefix is invalidated.</text>
-<text class="m" x="15" y="322">Red = the cost paid today · blue = the design: the catalog outside the prompt, one search tool inside it.</text>
+<rect width="1120" height="455" fill="#fff"/>
+<text class="y" x="15" y="14">TOOLS IN HUNDREDS — PROGRESSIVE TOOL DISCOVERY: ONE SEARCH TOOL IN THE PROMPT, THE CATALOG AND THE INDEX BEHIND IT</text>
+
+<rect class="wx" x="15" y="40" width="160" height="78"/>
+<text class="h" x="95" y="60" text-anchor="middle">Without it</text>
+<text class="m" x="95" y="77" text-anchor="middle">all 300 definitions in every call</text>
+<text class="m" x="95" y="91" text-anchor="middle">about 150k tokens before the question</text>
+<text class="m" x="95" y="105" text-anchor="middle">mis-picks among look-alikes</text>
+
+<rect class="b" x="200" y="40" width="900" height="52"/>
+<text class="h" x="215" y="61">Model</text>
+<text class="m" x="215" y="78">sees tools[] + messages · returns one tool call, or the answer</text>
+<text class="m" x="1085" y="78" text-anchor="end">tools[] = search_tools + 3 to 5 pinned + what was found so far · never the 300</text>
+
+<line class="l" x1="300" y1="168" x2="300" y2="94"/><line class="l" x1="330" y1="94" x2="330" y2="168"/>
+<text class="m" x="342" y="116">① call 1 · tools = [search_tools + pinned]</text>
+<text class="m" x="342" y="151">② search_tools("refund an order")</text>
+<line class="l" x1="600" y1="168" x2="600" y2="94"/><line class="l" x1="630" y1="94" x2="630" y2="168"/>
+<text class="m" x="642" y="116">④ call 2 · tools += refund_order {…}</text>
+<text class="m" x="642" y="151">⑤ refund_order(ORD-1, …)</text>
+<line class="l" x1="880" y1="168" x2="880" y2="94"/><line class="l" x1="910" y1="94" x2="910" y2="168"/>
+<text class="m" x="922" y="116">⑦ call 3 · messages += result</text>
+<text class="m" x="922" y="151">⑧ the answer → user</text>
+
+<rect class="b" x="15" y="215" width="160" height="56"/>
+<text class="h" x="95" y="236" text-anchor="middle">User</text>
+<text class="m" x="95" y="252" text-anchor="middle">"refund order ORD-1"</text>
+<line class="l" x1="175" y1="243" x2="198" y2="243"/>
+
+<rect class="o" x="200" y="170" width="900" height="175"/>
+<text class="h" x="215" y="190">Orchestrator</text>
+<text class="m" x="310" y="190">the loop dispatches every returned tool call by name: search_tools is answered here, every other name goes to the tool client</text>
+
+<rect class="o" x="215" y="205" width="230" height="75"/>
+<text class="h" x="330" y="226" text-anchor="middle">search_tools handler</text>
+<text class="m" x="330" y="243" text-anchor="middle">answers ③ itself: no model, no server</text>
+<text class="m" x="330" y="257" text-anchor="middle">index lookup → names and one-liners</text>
+<text class="m" x="330" y="271" text-anchor="middle">copies the found definitions into call 2</text>
+
+<path class="s" d="M489,214 a80,9 0 0 1 160,0 v52 a80,9 0 0 1 -160,0 z"/><path d="M489,214 a80,9 0 0 0 160,0" fill="none" stroke="#1a1f2b" stroke-width="1.2"/>
+<text class="h" x="569" y="240" text-anchor="middle">Index</text>
+<text class="m" x="569" y="256" text-anchor="middle">name · description · params</text>
+<text class="m" x="569" y="270" text-anchor="middle">built once, at registration</text>
+
+<path class="s" d="M693,214 a80,9 0 0 1 160,0 v52 a80,9 0 0 1 -160,0 z"/><path d="M693,214 a80,9 0 0 0 160,0" fill="none" stroke="#1a1f2b" stroke-width="1.2"/>
+<text class="h" x="773" y="240" text-anchor="middle">Catalog</text>
+<text class="m" x="773" y="256" text-anchor="middle">300 full definitions</text>
+<text class="m" x="773" y="270" text-anchor="middle">parameters included</text>
+
+<rect class="o" x="897" y="205" width="188" height="75"/>
+<text class="h" x="991" y="226" text-anchor="middle">loaded_tools</text>
+<text class="m" x="991" y="243" text-anchor="middle">names found in this conversation</text>
+<text class="m" x="991" y="257" text-anchor="middle">saved with the conversation</text>
+<text class="m" x="991" y="271" text-anchor="middle">the next turn needs no search</text>
+
+<line class="l" x1="445" y1="243" x2="487" y2="243"/><text class="m" x="466" y="236" text-anchor="middle">③a</text>
+<line class="l" x1="649" y1="243" x2="691" y2="243"/><text class="m" x="670" y="236" text-anchor="middle">③b</text>
+<line class="l" x1="853" y1="243" x2="895" y2="243"/><text class="m" x="874" y="236" text-anchor="middle">③c</text>
+
+<rect class="b" x="215" y="293" width="870" height="42"/>
+<text class="h" x="650" y="311" text-anchor="middle">Tool client</text>
+<text class="m" x="650" y="327" text-anchor="middle">tools/call as the user, exactly as today · ⑥</text>
+
+<line class="l" x1="420" y1="388" x2="420" y2="347"/><text class="m" x="432" y="372">⓪ tools/list, once at registration → catalog + index</text>
+<line class="l" x1="800" y1="347" x2="800" y2="388"/><text class="m" x="812" y="372">⑥ tools/call</text>
+
+<rect class="s" x="200" y="390" width="900" height="52"/>
+<text class="h" x="215" y="411">Tool servers</text>
+<text class="m" x="215" y="428">300 tools · answer tools/list and tools/call · never see search_tools</text>
 </svg>

@@ -1,6 +1,6 @@
-# Scaling and performance
+# Scaling
 
-[Scaling the orchestrator pods, CPU](#scaling-the-orchestrator-pods-cpu) · [Scaling the persistent connection](#scaling-the-persistent-connection) · [Scaling the GPU, the one thing that does not autoscale](#scaling-the-gpu-the-one-thing-that-does-not-autoscale) · [Scaling the tools and the state](#scaling-the-tools-and-the-state) · [Performance](#performance-what-the-model-sees-on-every-call) · [Out of scope](#out-of-scope)
+[Scaling the orchestrator pods, CPU](#scaling-the-orchestrator-pods-cpu) · [Scaling the persistent connection](#scaling-the-persistent-connection) · [Scaling the GPU, the one thing that does not autoscale](#scaling-the-gpu-the-one-thing-that-does-not-autoscale) · [Scaling the tools and the state](#scaling-the-tools-and-the-state) · [Out of scope](#out-of-scope)
 
 The loop itself is cheap. What has to scale is around it: the pods that run the loop, the connections that carry the answer back, the one GPU every tenant shares, and the context the model reads on every call. Durability already moved the loop behind a queue; this page builds on that picture.
 
@@ -64,10 +64,6 @@ I pick the meter and the shared service, because a pod only ever sees its own sl
 - **State.** The step row is the ledger; telemetry is written behind it, never one fat synchronous write per step. The scar: with no telemetry store, the relational state store quietly absorbed the observability writes too, tens of rows and a hundred kilobytes per conversation, and write latency became conversation latency. The right answer is a stream into a column store, separated from the state store on day one.
 - **Tenancy.** The tenant id rides on the turn and on every call. Where the tenant owns the infrastructure, isolation is routing. At the one shared step, the GPU, isolation is admission: that is the governor above.
 
-## Performance: what the model sees on every call
-
-Performance is time and tokens, and it has its own page: [PERFORMANCE.md](PERFORMANCE.md). Four optimizations, each with its picture: the prefix cache and prompt order, tools in the hundreds, dedupe of tool results, and multi-agent leakage; and for each, what v2 implements.
-
 ## Out of scope
 
-Not built in this repo: Redis and the multi-node stream, the inference gateway and the governor, the context budget and the summary fold, the tool catalog and its index. Each is a design above with the seam it plugs into named: the API layer, the model interface, the context builder, the tool registry.
+Not built in this repo: Redis and the multi-node stream, the inference gateway and the governor. Each is a design above with the seam it plugs into named: the API layer and the model interface. Time and tokens have their own page: [PERFORMANCE.md](PERFORMANCE.md).

@@ -1,6 +1,6 @@
 # Performance: time and tokens
 
-[The prefix cache](#the-prefix-cache) · [Tools in the hundreds](#tools-in-the-hundreds) · [Dedupe of tool results](#dedupe-of-tool-results) · [Multi-agent leakage](#multi-agent-leakage) · [What v2 implements](#what-v2-implements)
+[The prefix cache](#the-prefix-cache) · [Tools in hundreds · Progressive tool discovery](#tools-in-hundreds--progressive-tool-discovery) · [Dedupe of tool results](#dedupe-of-tool-results) · [Multi-agent leakage](#multi-agent-leakage) · [What v2 implements](#what-v2-implements)
 
 Performance in an agent loop is not only time. Every model call reads the whole prompt again, so a prompt that grows is paid twice on every turn: once in seconds, once in tokens. The four optimizations below each cut both, and each is measured the same way: replay one recorded conversation, plot latency and tokens per turn, and check function and cost in one run.
 
@@ -19,19 +19,23 @@ Performance in an agent loop is not only time. Every model call reads the whole 
 
 **What I ran.** Every question in a conversation was slower and more expensive than the one before. Replaying one recorded conversation and plotting latency and tokens per turn gave a rising line; a model problem is flat, so the problem was in the platform. The reorder was done once in the shared context builder, so no team changed its agent, and the cached-token count, which the provider did not return at first, was obtained and reported next to cost. With the other context fixes, the long-conversation turn went from twenty or thirty seconds to about six and context to about a tenth, with function held on the golden set. Trim, a window and dedupe shipped; summary compaction at checkpoints is the direction.
 
-## Tools in the hundreds
+## Tools in hundreds · Progressive tool discovery
 
-![tools in the hundreds: the catalog outside the prompt, one search tool inside it](perf-tools.svg)
+![progressive tool discovery: one search tool in the prompt, the catalog and the index behind it](perf-tools.svg)
 
-- The model never talks to a tool server. The harness builds the tool list for every call, and the protocol has no search: a server returns everything, so any narrowing lives in the harness.
-- Every definition rides in every model call, about five hundred tokens each: five tools is a few thousand, thirty is fifteen thousand, three hundred is a hundred and fifty thousand, read again before the model sees the question. Past a few dozen the model also mis-picks among look-alikes.
-- The design: list each server once at registration, keep every definition in a catalog, index name, description and parameter names. The model sees three to five pinned tools plus one search tool. When it searches, the harness answers from the index with names and one-liners, loads the found definitions for the next call, and remembers them with the conversation so later turns need no search.
-- The trade: one extra model call the first time a capability is needed, then a handful of definitions instead of hundreds on every call after. Under about ten tools, just load them.
-- Keep the found definition out of the cached prefix: append it as conversation content rather than rewriting the tools block, or the whole prefix is invalidated.
+- The issue. A tool server with sixty objects and five verbs each is three hundred tools. Every definition rides in every model call, about five hundred tokens each, so the model reads about 150k tokens before it reads the question, on every call of every turn. Past a few dozen it also mis-picks among look-alikes.
+- The design in my words: I have this search tool which knows what the tools for this agent are and exposes a search instead. The LLM calls this, and I have the intelligence to return the tool definition as output. The LLM sees that and calls the actual tool, and then we go call MCP.
+- ⓪ Once, when a server is registered: list its tools, keep the full definitions in the catalog, index name, description and parameter names. Never on a turn.
+- ① ② The model sees search_tools plus three to five pinned tools. It has no refund tool, so it searches.
+- ③ The orchestrator answers the search itself: an index lookup, no model, no server. It replies with names and one-liners, copies the found full definitions from the catalog into the next call, and remembers the names with the conversation.
+- ④ ⑤ The model now has the parameters and calls the real tool. ⑥ The loop routes it to the tool client, exactly as today. ⑦ ⑧ The answer.
+- What ranks the three hundred is a keyword or hybrid index over names and one-liners, milliseconds, no model; the model's own query carries the intent. A reranker only if the top three are often wrong, measured on a golden set of question → expected tool.
+- When to switch it on: the orchestrator holds every definition, so it knows their token count. Above a share of the context window, search; below, load them all. Under about ten tools, just load them.
+- The cache rule: append the found definition as conversation content; rewriting the tools block invalidates the whole prefix.
 
-**Time and tokens.** Prefill at three hundred tools drops from about a hundred and fifty thousand tokens per call to a few thousand; the index query is milliseconds with no model; the only cost is the one extra call on first use. Published evals from the model vendors show about eighty-five percent fewer tokens and better selection accuracy with search than with everything loaded.
+**Time and tokens.** Prefill per call at three hundred tools goes from about 150k tokens to a few thousand; the index query is milliseconds; the one cost is an extra model call the first time a capability is needed, and later turns reuse the loaded names without a search. The model vendors' published evals: about 85% fewer tokens and better selection with search than with everything loaded.
 
-**What I ran.** My platform today hands the model every imported tool on every call and lists each tool server live on every turn. The catalog, the index and the search tool are my written proposal for it, not shipped.
+**What I ran.** My platform today hands the model every imported tool on every call and lists each tool server live on every turn. The search tool, the catalog and the index are my written proposal for it, not shipped.
 
 ## Dedupe of tool results
 
@@ -63,6 +67,6 @@ Performance in an agent loop is not only time. Every model call reads the whole 
 | Optimization | In v2 | Design only |
 |---|---|---|
 | the prefix cache | the context is built append-only, and a repeat is a reference | the stable-to-volatile order and the cached-token column apply once a real model is behind the interface |
-| tools in the hundreds | nothing: v2 has six tools, under the threshold | the catalog, the index, the search tool |
+| tools in hundreds | nothing: v2 has six tools, under the threshold | the search tool, the catalog, the index |
 | dedupe of tool results | built: the `DEDUPED` span, "unchanged, see step k", the handler runs once | the stability rule per tool |
 | multi-agent leakage | built: agent as a tool, the child sees the goal and its tools, the parent gets the answer | |
