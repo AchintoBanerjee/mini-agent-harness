@@ -23,6 +23,9 @@ import java.util.Map;
  * store before the loop acts on it: the LLM row before the tools run, the TOOL rows before
  * the model is asked again. The LLM row's attrs carry the decided calls, so a run that died
  * between two rows resumes from the log without asking the model again for that decision.
+ * Several questions form one conversation: the model sees the earlier turns as Q/A lines,
+ * and a call whose tool and input already ran OK anywhere in the conversation is not run
+ * again but recorded as DEDUPED, pointing at the step it repeats.
  */
 public class Orchestrator {
 
@@ -30,6 +33,7 @@ public class Orchestrator {
     static final String QUESTION = "question";
     static final String TOOL = "tool";
     static final String KEY = "key";
+    static final String REF = "ref";
 
     private final Agent agent;
     private final ToolRegistry registry;
@@ -66,8 +70,7 @@ public class Orchestrator {
         if (conversation == null) {
             conversation = new Conversation(store.newRun(agent.name(), question), agent);
         }
-        Turn turn = new Turn(question);
-        conversation.turns().add(turn);
+        Turn turn = conversation.turn(question);
         return loop(turn, conversation.turns().size(), 1);
     }
 
@@ -93,8 +96,7 @@ public class Orchestrator {
                 if (question == null) {
                     throw new IllegalStateException("row " + row.step() + " of " + runId + " carries no question: this log predates resume");
                 }
-                turn = new Turn(question);
-                conversation.turns().add(turn);
+                turn = conversation.turn(question);
             }
             turn.spans().add(row);
         }
@@ -141,7 +143,7 @@ public class Orchestrator {
         int maxPasses = agent.maxPasses();
         for (int pass = fromPass; pass <= maxPasses; pass++) {
             long started = System.nanoTime();
-            ModelReply reply = llm.next(new Context(turn.question(), List.copyOf(turn.spans())), tools);
+            ModelReply reply = llm.next(context(turn), tools);
             List<ToolCall> calls = reply.calls();
             record(turn, turnNo, pass, Span.Kind.LLM, "pass " + pass, reply.toString(),
                     Span.Status.OK, Span.millisSince(started), decided(turn.question(), calls));
@@ -157,30 +159,74 @@ public class Orchestrator {
         return finish(turn);
     }
 
+    /** What the model sees: this turn's rows so far, and each earlier turn as one "Q: ... -> A: ..." line. */
+    private Context context(Turn turn) {
+        List<String> history = new ArrayList<>();
+        for (Turn earlier : conversation.turns()) {
+            if (earlier == turn) {
+                break;
+            }
+            history.add("Q: " + earlier.question() + " -> A: " + earlier.answer());
+        }
+        return new Context(turn.question(), List.copyOf(turn.spans()), history);
+    }
+
     /**
      * Runs the calls (together when several) and records one TOOL row each, in request
      * order, with that call's own time; a batch also leaves a NOTE row: wall against work.
+     * A call whose tool and input already ran OK in this conversation does not run: its
+     * row is DEDUPED and points at the step it repeats.
      */
     private void runCalls(Turn turn, int turnNo, int pass, List<ToolCall> calls, int decidingStep) {
+        List<Span> repeats = new ArrayList<>();
+        List<ToolCall> fresh = new ArrayList<>();
+        for (ToolCall call : calls) {
+            Span earlier = earlierOk(call);
+            repeats.add(earlier);
+            if (earlier == null) {
+                fresh.add(call);
+            }
+        }
         long started = System.nanoTime();
-        List<ToolResult> results = calls.size() == 1 ? List.of(toolCaller.call(calls.get(0))) : toolCaller.callAll(calls);
+        List<ToolResult> results = fresh.size() == 1 ? List.of(toolCaller.call(fresh.get(0))) : toolCaller.callAll(fresh);
         long wall = Span.millisSince(started);
         long work = 0;
+        int next = 0;
         for (int i = 0; i < calls.size(); i++) {
             ToolCall call = calls.get(i);
-            ToolResult result = results.get(i);
-            work += result.ms();
             Map<String, String> attrs = new LinkedHashMap<>();
             attrs.put(TOOL, call.toolName());
             attrs.putAll(call.input());
             attrs.put(KEY, conversation.id() + "/" + decidingStep);
+            ToolResult result;
+            if (repeats.get(i) != null) {
+                attrs.put(REF, String.valueOf(repeats.get(i).step()));
+                result = new ToolResult("unchanged, see step " + repeats.get(i).step(), Span.Status.DEDUPED, 0);
+            } else {
+                result = results.get(next++);
+                work += result.ms();
+            }
             record(turn, turnNo, pass, Span.Kind.TOOL, call.toolName() + " " + call.input(),
                     result.output(), result.status(), result.ms(), attrs);
         }
-        if (calls.size() > 1) {
-            record(turn, turnNo, pass, Span.Kind.NOTE, "ran " + calls.size() + " tools together: wall "
+        if (fresh.size() > 1) {
+            record(turn, turnNo, pass, Span.Kind.NOTE, "ran " + fresh.size() + " tools together: wall "
                     + wall + " ms, work " + work + " ms", "", Span.Status.OK, wall, Map.of());
         }
+    }
+
+    /** The first OK TOOL row of this conversation that ran the same tool on the same input, or null. */
+    private Span earlierOk(ToolCall call) {
+        for (Turn earlier : conversation.turns()) {
+            for (Span row : earlier.spans()) {
+                if (row.kind() == Span.Kind.TOOL && row.status() == Span.Status.OK
+                        && call.toolName().equals(row.attrs().get(TOOL))
+                        && row.attrs().entrySet().containsAll(call.input().entrySet())) {
+                    return row;
+                }
+            }
+        }
+        return null;
     }
 
     /** What the LLM row remembers: the question, and the calls if the model asked for any. */

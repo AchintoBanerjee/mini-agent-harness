@@ -73,4 +73,17 @@ class RelaySummarizerTest {
 
         assertEquals("Order ORD-1: SHIPPED, shipment SHP-1\nTool throw_boom ERROR: Tool failed: boom", summarizer.summarize(turn));
     }
+
+    @Test
+    void aDedupedRowAnswersWithTheOutputOfTheStepItPointsAtEvenFromAnEarlierTurn() {
+        Conversation conversation = new Conversation("r-1", null);
+        Turn first = conversation.turn("order ORD-1");
+        first.spans().add(new Span("r-1", 2, 1, 1, Span.Kind.TOOL, "order_status {orderId=ORD-1}", "Order ORD-1: SHIPPED",
+                Span.Status.OK, 1, Map.of("tool", "order_status")));
+        Turn second = conversation.turn("order ORD-1 again");
+        second.spans().add(new Span("r-1", 5, 2, 1, Span.Kind.TOOL, "order_status {orderId=ORD-1}", "unchanged, see step 2",
+                Span.Status.DEDUPED, 0, Map.of("tool", "order_status", "ref", "2")));
+
+        assertEquals("Order ORD-1: SHIPPED", summarizer.summarize(second));
+    }
 }

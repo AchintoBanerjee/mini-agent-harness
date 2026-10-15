@@ -27,4 +27,11 @@ public class Conversation {
     public List<Turn> turns() {
         return turns;
     }
+
+    /** Opens the next turn. It knows this conversation, so its rows can point at earlier ones. */
+    public Turn turn(String question) {
+        Turn turn = new Turn(question, this);
+        turns.add(turn);
+        return turn;
+    }
 }
