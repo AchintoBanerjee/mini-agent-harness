@@ -12,18 +12,9 @@ An agent can be up, fast, error-free, and completely wrong. Measuring a harness 
 
 ## Your own rows, or a product
 
-- The use case at scale is one view over every agent of every tenant: the rates per agent version, the drill-down from a rate to the exact turn, the judge's input. That is what LangSmith and the products like it sell.
-- The same thing can be done over your own rows: the loop writes every step, a scheduled job scores them, the scores sit beside the rows, a column store answers the fleet questions.
-
-| | over your own rows | a product such as LangSmith |
-|---|---|---|
-| the rows | yours, in your store; the text never leaves | its store, in its cloud or self-hosted; the text goes there |
-| before ship | your golden set, your runner, your table | datasets and experiments: the same idea, with screens |
-| live | a scheduled judge over a sample, scores beside the rows, rates per agent version | online evaluators on a sample: the same shape |
-| across tenants at scale | a column store beside the state database, such as ClickHouse: one GROUP BY, then the turn | built in: traces, scores, annotation queues, one view |
-| what it costs | you run the judge, the store and the screens | a bill per trace, and the data boundary question |
-
-v2 does it over its own rows: the golden set, the runner and the table are code over the spans the loop wrote. My platform did the same over its rows, with a scheduled judge on a sample. The step up is the same rows fanned into a column store or into LangSmith; the loop does not change, and the listener that gets every step is the seam.
+- At scale the question is one view over every agent of every tenant: the rates per agent version, a click from a rate to the exact turn, the judge's input. A product such as LangSmith sells exactly that: traces, scores, datasets and the screens.
+- The same can be built over your own rows: the loop writes every step, a scheduled job scores a sample, the scores sit beside the rows, a column store answers the questions across agents. v2 does the before-ship half of this over its own rows; my platform did both halves over its rows.
+- What decides is where the text may live. In your own store when the contract says the text stays with the tenant; in the product when it may leave. The loop does not change either way: the listener that gets every step is the seam.
 
 ## The design
 
@@ -53,15 +44,10 @@ I pick the expected trace, the sampled judge and named rates. I designed a blend
 
 ## What I ran, on my platform in production
 
-- The teams that own the agents recorded golden sets from real sessions. Each case stored the expected trace next to the expected answer. We replayed them as a batch gate before promotion. Not a CI gate: a bad change reached the gate, not the pull request.
-- A scheduled judge over a sample of production turns, per agent, throttled, scoring groundedness, answer and context relevance, correctness and completeness, published per agent version. A model switch that broke agents in subtle ways showed as a trend break; teams had anecdotes, the judge had numbers; stabilized in days. Model changes needed an evaluation gate after that.
-- We never shipped the trace scorer. Every case stored the expected trace, and the route and step scorers were the first thing on my gap list. The data was there, the scorer was not. People found tool-call regressions by reading traces.
-- Tool errors sat in the rows uncounted. The cheapest checks, tool error rate by tool and version, right tool against the expected set, are pure code, and they were the ones missing.
-- Our judge sampled by step, not by turn, and published the result under a turn label. Now I decide the grain of every score before it reaches a chart.
-- I designed a composite health score in an early one-pager and dropped it, for the reason in the table.
-- The finding that made the measurement real was one I reached by hand. I plotted prompt tokens per turn from the rows: about 175k by turn sixteen, most of it ten copies of one tool result.
-- A model problem is flat; a climbing curve is the context builder. The fix cut tokens by about eighty percent, with the tenants' golden sets flat.
-- That was me doing the eval system's job by hand, and it is why the harness scores come first.
+- Before ship: the teams that own the agents recorded golden sets from real sessions, the expected tool calls stored next to the expected answer, and we replayed them as a gate before a change went out.
+- Live: a scheduled judge scored a sample of real turns per agent and published the trend per agent version. When a model switch broke agents in subtle ways, the trend broke, and we had it in days instead of weeks of anecdotes.
+- What was missing: the check that compares the tools called with the tools expected never shipped, and tool errors were never counted. Both are plain code over rows we already had: the cheapest checks, and the ones missing.
+- The finding that made all of this real I reached by hand. I plotted prompt tokens per turn from the rows and saw a conversation at about 175k tokens by turn sixteen, most of it ten copies of one tool result. The fix cut tokens by about eighty percent with the golden sets flat. That is the check I would automate first.
 
 ## The implementation
 
@@ -132,25 +118,11 @@ The two failures are the stub's known limits, left in so the table has something
 
 ## Live, at scale: where the rows go and who judges
 
-The before-ship loop reads a few rows. The live loop reads every step of every agent, across every tenant, and at scale that is a different problem.
-
-- **One store cannot be both.** The step row is on the request path: the next turn's context is built from it, resume reads it, the UI renders it, audit and replay need the full text. Point reads by id, per tenant, transactional. The fleet question is the opposite shape: scan billions of skinny rows across every tenant, group by anything, append-only. One logical model, two physical shapes, joined by the same ids.
-- **The span rows.** One wide, append-only table, one row per step, every dimension repeated on every row: tenant, agent, version, model, pod, tokens, cost, latency, status, and the text as a pointer by default. Any fleet question is one GROUP BY, then one click into the exact turn. Scores sit beside the rows, keyed by the turn id and the judge version. A column store such as ClickHouse, or LangSmith on top of one.
-- **Three screens, three jobs**, the design. The metrics system pages me. The span rows tell me who and where. The tenant row shows me why. Alerts need a few numbers summed ahead of time, with few labels; the span rows keep every dimension and answer any question at query time. The column store computes, the metrics system pages.
-- **The writer.** The loop writes each step once. A collector takes the span out of the process, strips identifiers, and fans the same span out to the trace store and to the metrics page. Nothing in the orchestrator knows which vendor is behind it; switching one product for another is a change in the collector's export list, not in the loop.
-- **Telemetry travels, content stays.** Ids, dimensions and numbers go everywhere. The words stay in the tenant's store and are fetched by id, with authorization, when a human or the judge needs them. A redacted copy goes to the trace store only when the tenant opts in, in its region, with a retention limit. Never to a vendor's cloud for an enterprise tenant unless the contract says so.
-- **The judge runs inside that boundary.** It reads the tenant row by id, or the redacted copy, and writes back only a score.
-
-Which store, and whether a product sits on top, is the comparison at the top of this page.
-
-**What I ran, on my platform in production**
-
-- Every step was appended as a row per tenant, full payload, tokens in columns, and the next turn's context was built from those rows. That gave replay, audit and recorded golden sets. It was built for debugging one conversation, not for fleet questions.
-- The rows had no parent id, no pod or model column, no cost column. The judge's scores went to a metrics system per agent template, with no per-agent baseline and no drill-down. The numbers lived in three places and nothing joined.
-- "The GPU went up, who?" was hours of digging through logs, because nothing had a column to group by. With the span rows it is one GROUP BY and a click. Observability does not stop the batch that burns the GPU; the governor on the scaling page does. It shortens "who" from hours to minutes.
-- Persisting everything was right. What I would do from day one: one trace id minted at the turn and carried across the async hop, one dimension set on every row, metric, log line and score. A skinny multi-tenant span store beside the tenant database was cheap then; it is a migration now.
-
-None of this is in v2. The seam is the row the loop already writes: the listener that gets every step is where a span exporter hangs.
+- The live loop reads every step of every agent across every tenant. The step row is on the request path and is read by id; a question across the fleet scans billions of rows and groups by anything. One store cannot be both, so the rows are copied into a second, column-shaped store, joined by the same ids.
+- That store holds one wide row per step with every dimension on it, tenant, agent, version, model, tokens, cost, latency, status, and the text as a pointer. Any question is one query, then one click into the exact turn. Scores sit beside the rows. A column store such as ClickHouse, or a product such as LangSmith on top of one.
+- The loop writes each step once. A collector takes the span out of the process, strips identifiers, and fans it out. The words stay in the tenant's store and are fetched by id when a person or the judge needs them; the judge runs inside that boundary and writes back only a score.
+- On my platform, in production: every step was a row per tenant with the full text, built for debugging one conversation, not for questions across the fleet. "The GPU went up, who?" was hours of digging through logs, because no row had a column to group by. What I would do from day one: one trace id on every row, metric, log line and score, and a skinny span store beside the state database.
+- None of this is in v2. The seam is the listener that gets every step.
 
 ## What v2 implements
 
