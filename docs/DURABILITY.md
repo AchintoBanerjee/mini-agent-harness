@@ -14,6 +14,7 @@ A turn (job id) becomes a message on a queue, a worker runs it, and when the wor
 
 ![durability](durability.svg)
 
+- **The split.** The HLD drew the HTTP face and the loop as one service. Here they become two processes with a queue between them: the API process takes the request, a worker process runs the turn. A turn is seconds of model and tool calls and has to outlive the request that created it, and the two scale on different signals, requests on one side and queue depth on the other.
 - **End users → API layer**: the question comes in; the API writes the turn row (`QUEUED`) and a message on the queue in one transaction, and returns the turn's id, the job id, at once. No loop runs in this process.
 - **Run queue**: the message is the turn. `receive` hides it for the visibility window, and that window is the lease: whoever holds it is the only worker on the turn.
 - **Workers**: a worker receives, claims the turn row (`RUNNING`, its process id, attempts + 1) and runs the loop; each step is written to the store before the next one, and each written step extends the lease.
