@@ -4,13 +4,13 @@ I built an agent platform that thousands of customers use in production, and hav
 
 One page that ties the pages together, in the order they were built: what was built live, what v2 adds, then the deep dives. Read this for the story, each page for the depth, `./demo.sh` for the proof (`docs/demo-output.txt` is its saved output). The brief is [PROBLEM.md](PROBLEM.md).
 
-[1 · v1](#1--v1-what-i-built-live) · [2 · v2 HLD](#2--v2-the-harness-as-a-small-service) · [3 · Additional features](#3--v2-additional-features) · [4 · Durability](#4--durability) · [5 · Scaling](#5--scaling) · [6 · Performance](#6--performance) · [7 · Sub-agents](#7--sub-agents) · [8 · Measuring](#8--measuring-the-harness) · [9 · The picture at the end](#9--the-picture-at-the-end) · [10 · Next](#10--what-i-would-build-next-in-order)
+[1 · v1](#1--v1-what-i-built-live) · [2 · v2 HLD](#2--v2-the-harness-as-a-small-service) · [3 · Additional features](#3--v2-additional-features) · [4 · Durability](#4--durability) · [5 · Scaling](#5--scaling) · [6 · Performance](#6--performance) · [7 · Sub-agents](#7--sub-agents) · [8 · Measuring](#8--measuring-the-harness) · [9 · Routing across providers](#9--routing-across-providers) · [10 · Sandboxing tools](#10--sandboxing-tools) · [11 · The picture at the end](#11--the-picture-at-the-end) · [12 · Next](#12--what-i-would-build-next-in-order)
 
 ## 1 · v1: what I built live
 
 ![the whiteboard from the live round](docs/v1-whiteboard.png)
 
-- The brief: `run(goal)`, a loop that hands the state to a model, runs the tool it asks for, feeds the result back, stops when the model says done; a stub model, no network. Then six follow-ups: durable runs, sub-agents, parallel tool calls, measuring the harness, routing across providers, sandboxing. Four of the six have a page below. Routing across providers and sandboxing do not: the LLM proxy and the tool caller are the seams they plug into, and I chose depth on four over breadth on six.
+- The brief: `run(goal)`, a loop that hands the state to a model, runs the tool it asks for, feeds the result back, stops when the model says done; a stub model, no network. Then six follow-ups: durable runs, sub-agents, parallel tool calls, measuring the harness, routing across providers, sandboxing. Five of the six have a page below; sandboxing is a short section at the end, since v2 has only its first level.
 - What I drew and built in the hour: Orchestrator owns the loop; LLMProxy is the stub; ToolCaller and ToolRegistry run and hold the tools; Conversation, Turn, Span and Context are the state; a Summarizer relays the answer. One process, one question, one tool, done.
 - What it could not do, and the follow-ups were about: a turn died with the process; nothing streamed; one tool at a time; no agent inside an agent; no way to say whether the loop did its job; the answer was the last tool's output.
 - `v1/` is that code, frozen at tag `v1`, with its own [README](v1/README.md).
@@ -79,11 +79,28 @@ Page: [docs/EVAL.md](docs/EVAL.md)
 - Built: a golden set with the expected trace, run before ship. Designed: a sampled judge on live turns, with named rates per agent version.
 - The harness scores are facts already in the rows, so code scores them exactly.
 
-## 9 · The picture at the end
+## 9 · Routing across providers
+
+Page: [docs/ROUTING.md](docs/ROUTING.md)
+
+- Design, from production. The LLM proxy is the seam; in production it is the gateway, and the governor lives in it. The decision runs in order: what the tenant allows, an explicit pick, affinity for a live conversation, the agent's model class mapped to the nearest region with a backup, health and the governor's number, a fallback chain within the class.
+- Strong or cheap is decided by evals, not by the router: the golden set against both models, the class moves when the scores hold, the live judge watches after.
+
+## 10 · Sandboxing tools
+
+Design, from production; v2 has the first level and the gate.
+
+- A tool runs where the harness binds it, and the question is how much of the harness it can reach. Four levels, each a step away from the loop: an adapter in the loop's process; a separate process with limits on time, memory and the file system; a container per task, thrown away after; a remote sandbox the harness only talks to.
+- What picks the level is what the tool does. A lookup against a service needs none of this. A tool that runs code the model wrote needs the container, every time.
+- Whatever the level, the tool acts as the user, not as the platform: the user's own credentials, scoped to the call, never a platform key. The agent's tool list is the first gate; the credentials are the second.
+- v2: every tool is an adapter in the loop's process, under the agent's clock and tool list; the first level and the gate, proven on [the features page](docs/V2_FEATURES.md).
+- What I ran, on my platform in production: tools calling the business systems as the user, with the user's own credentials passed through and scoped to the call. A container per task for code-running tools is what I built as a proof of concept, headless, with approvals pre-gated; it is the level I would ship next for any tool that executes what a model wrote.
+
+## 11 · The picture at the end
 
 Three diagrams, in the order the pages added them, are the harness at scale: [the split and the queue](docs/durability.svg), [the stream across pods](docs/scaling-stream.svg), [the governor in front of the GPU](docs/scaling-gpu.svg). Everything built in v2 keeps its seam in that picture: the API layer, the loop in the worker, the run's stream, the store, the LLM proxy, the tool registry.
 
-## 10 · What I would build next, in order
+## 12 · What I would build next, in order
 
 1. The live loop of the eval: a sampled judge on a schedule, rates per agent version, a confirmed failure back into the golden set.
 2. The Redis Stream per job id in place of the in-memory stream, and SQS with its dead-letter queue in place of the queue table.
