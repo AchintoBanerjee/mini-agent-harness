@@ -20,10 +20,11 @@
 <line class="l" x1="717" y1="70" x2="758" y2="70"/><text class="m" x="738" y="64" text-anchor="middle">①</text>
 <line class="l" x1="758" y1="96" x2="717" y2="96"/><text class="m" x="738" y="109" text-anchor="middle">②</text>
 
-<rect class="s" x="760" y="200" width="340" height="62"/><text class="h" x="930" y="219" text-anchor="middle">Tool caller</text><text class="m" x="930" y="236" text-anchor="middle">runs what the model names, under the agent's tool list and clock</text><text class="m" x="930" y="250" text-anchor="middle">several tools in one reply run together</text>
-<rect class="s" x="760" y="276" width="165" height="62"/><text class="h" x="842" y="295" text-anchor="middle">Tool registry</text><text class="m" x="842" y="312" text-anchor="middle">tools from tools/*.json</text><text class="m" x="842" y="326" text-anchor="middle">the type picks the adapter</text>
-<rect class="s" x="935" y="276" width="165" height="62"/><text class="h" x="1017" y="294" text-anchor="middle">Tools</text><text class="m" x="1017" y="309" text-anchor="middle">lookup · sleep · fail · agent</text><text class="m" x="1017" y="321" text-anchor="middle">this POC: data in the tool file</text><text class="m" x="1017" y="333" text-anchor="middle">prod: a tool gateway, REST, MCP</text>
-<line class="l" x1="842" y1="262" x2="842" y2="274"/><line class="l" x1="1017" y1="262" x2="1017" y2="274"/>
+<rect class="s" x="760" y="200" width="155" height="74"/><text class="h" x="837" y="219" text-anchor="middle">Tool caller</text><text class="m" x="837" y="236" text-anchor="middle">runs what the model names</text><text class="m" x="837" y="250" text-anchor="middle">under the agent's list and clock</text><text class="m" x="837" y="264" text-anchor="middle">several in one reply, together</text>
+<rect class="s" x="945" y="200" width="155" height="74"/><text class="h" x="1022" y="219" text-anchor="middle">Tool registry</text><text class="m" x="1022" y="236" text-anchor="middle">the tools from tools/*.json</text><text class="m" x="1022" y="250" text-anchor="middle">read once, looked up by name</text><text class="m" x="1022" y="264" text-anchor="middle">by the loop and by the caller</text>
+<line class="l" x1="945" y1="237" x2="917" y2="237"/>
+<rect class="s" x="760" y="288" width="340" height="56"/><text class="h" x="930" y="306" text-anchor="middle">Tools — the adapters the caller runs</text><text class="m" x="930" y="322" text-anchor="middle">lookup · sleep · fail · agent · in this POC: data in the tool file</text><text class="m" x="930" y="336" text-anchor="middle">in production: a tool gateway, REST and MCP calls as the user</text>
+<line class="l" x1="837" y1="274" x2="837" y2="286"/>
 <line class="l" x1="717" y1="210" x2="758" y2="210"/><text class="m" x="738" y="204" text-anchor="middle">③</text>
 <line class="l" x1="758" y1="232" x2="717" y2="232"/><text class="m" x="738" y="245" text-anchor="middle">④</text>
 
