@@ -5,7 +5,8 @@ files; every run is a step log in `runs/`, written before each step is acted on;
 resumes from its log; a runaway tool is cut off at the agent's timeout; independent tool calls
 run together; a repeated tool call is deduped inside a conversation; and a golden set scores the
 harness itself. The model is still a stub (`RuleBasedLLM`): no network, no keys. The design
-write-up is `../DESIGN.md`; the live round's whiteboard is `../docs/v1-whiteboard.png`.
+write-up is `../DESIGN.md` (it lands after the code steps); the live round's whiteboard is
+`../docs/v1-whiteboard.png`.
 
 ## Build and test
 
@@ -115,8 +116,11 @@ run r-eccf · 2 passes · 2 tool calls · 356 ms · runs/r-eccf.jsonl · handler
 `--crash-after 1` exits the process (code 3) right after row 1, the LLM row that decided the
 tool call, is persisted. The log survived, so `resume` rebuilds the turn, runs the decided call
 without asking the model again, and finishes the loop. (`--crash-before-persist` is the other
-window: the tool ran, its TOOL row never landed, so `resume` runs it again and the footer shows
-`handler calls: order_status=2`.)
+window: the tool ran, its TOOL row never landed. The crash line prints
+`handler calls: order_status=1`; `resume` runs the call again and its own footer prints
+`handler calls: order_status=1` too, so the handler ran twice across the two processes. The
+count is a per-process static map, so no single footer ever shows 2. That window is not in
+`demo.sh`.)
 
 ```
 $ java -cp "target/classes:target/lib/*" harness.cli.Main run --agent support "What is the status of order ORD-1?" --crash-after 1
