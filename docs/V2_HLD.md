@@ -2,7 +2,7 @@
 
 [What v2 is](#what-v2-is) · [The data model](#the-data-model) · [The HTTP endpoints](#the-http-endpoints) · [Streaming the answer](#streaming-the-answer) · [Persistence](#persistence) · [Agents and tools are metadata](#agents-and-tools-are-metadata) · [Try it](#try-it)
 
-The harness as a small service: you call it over HTTP, its state lives in one SQLite file, and the answer streams back as the steps happen. The model is still a stub; nothing needs a key or a network.
+The harness as a small service: you call it over HTTP, its state lives in one SQLite file, and the answer streams back as the steps happen. The model is still a stub; nothing needs a key or a network. Every output below is from a real run of `./demo.sh`; the committed `demo-output.txt` is a later run, so its ids and timings differ, nothing else.
 
 ## What v2 is
 
@@ -53,6 +53,7 @@ CREATE TABLE IF NOT EXISTS span (
 | Method | Path | What it does | Returns |
 |---|---|---|---|
 | GET | `/agents` | the agents, from `agents/*.json` | `200`, a list |
+| GET | `/agents/{name}` | one agent file | `200`; `404` |
 | GET | `/tools` | the tools, from `tools/*.json` | `200`, a list |
 | POST | `/runs` | body `{"agent","question"}`: writes the turn row and queues it; `{"conversationId","question"}` adds a turn to that conversation | `202 {"turnId","jobId","conversationId","status":"QUEUED"}` at once |
 | GET | `/turns/{id}` (also `/runs/{id}`) | the turn, its spans, the answer when done | `200`; `404` |
@@ -179,28 +180,25 @@ I pick SQLite here: the smallest thing with a turn row and a query, and the tabl
 <details><summary>proof: the file after the demo</summary>
 
 ```
-$ sqlite3 -header -column harness.db "SELECT t.id, c.agent, t.status, t.attempts, t.answer FROM turn t JOIN conversation c ON c.id = t.conversation_id ORDER BY t.rowid"
-id      agent    status  attempts  answer                                          
-------  -------  ------  --------  ------------------------------------------------
-r-478b  support  DONE    1         Order ORD-1: SHIPPED, shipment SHP-1            
-
-r-8659  chaos    DONE    1         Tool hang_forever TIMEOUT: cut off after 1000 ms
-
-r-45b2  support  DONE    1         Order ORD-1: SHIPPED, shipment SHP-1            
-
-r-b722  support  DONE    1         Order ORD-2: PROCESSING                         
-                                   Product PRD-1: 42 units in stock                
-
-r-5a9e  support  DONE    2         Order ORD-1: SHIPPED, shipment SHP-1            
-$ sqlite3 -header -column harness.db "SELECT span, pass, kind, status, ms FROM span WHERE turn_id = 'r-5a9e'"
+$ sqlite3 -header -column harness.db "SELECT t.id, c.agent, t.status, t.attempts FROM turn t JOIN conversation c ON c.id = t.conversation_id ORDER BY t.rowid"
+id      agent      status  attempts
+------  ---------  ------  --------
+r-e841  support    DONE    1       
+r-446c  chaos      DONE    1       
+r-0630  support    DONE    1       
+r-c6f0  support    DONE    1       
+r-5085  concierge  DONE    1       
+r-badd  loop       DONE    1       
+r-505e  support    DONE    2       
+$ sqlite3 -header -column harness.db "SELECT span, pass, kind, status, ms FROM span WHERE turn_id = 'r-505e'"
 span  pass  kind  status  ms
 ----  ----  ----  ------  --
-1     1     LLM   OK      3 
+1     1     LLM   OK      4 
 2     1     TOOL  OK      0 
 3     1     NOTE  OK      0 
 4     2     LLM   OK      1 
 ```
-Five turns, each with its agent through the conversation it belongs to; the last one took two attempts (the durability page) and its spans show the resume as the NOTE row.
+Seven turns from one run of the demo, two of them the sub-agent page's; the last one is the durability turn, two attempts, four spans including the resume note.
 </details>
 
 ## Agents and tools are metadata

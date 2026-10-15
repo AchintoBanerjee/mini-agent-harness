@@ -2,7 +2,7 @@
 
 [The issue](#the-issue) · [The design](#the-design) · [The guarantee](#the-guarantee) · [The choices](#the-choices) · [What I ran](#what-i-ran) · [The implementation](#the-implementation) · [Proof](#proof)
 
-A turn (job id) becomes a message on a queue, a worker runs it, and when the worker dies the next one picks the turn up from its last saved step. This is how I envision it with SQS; the POC shows the bare minimum of the idea with a SQLite table standing in for the queue, the same three calls. Everything beyond that is out of scope here and says so. Every output below is pasted from `demo-output.txt`, which `./demo.sh` writes.
+A turn (job id) becomes a message on a queue, a worker runs it, and when the worker dies the next one picks the turn up from its last saved step. This is how I envision it with SQS; the POC shows the bare minimum of the idea with a SQLite table standing in for the queue, the same three calls. Everything beyond that is out of scope here and says so. Every output below is from a real run of `./demo.sh`; the committed `demo-output.txt` is a later run, so its ids and timings differ, nothing else.
 
 ## The issue
 
