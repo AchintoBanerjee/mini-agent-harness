@@ -1,42 +1,45 @@
 package harness.http;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.core.util.DefaultIndenter;
+import com.fasterxml.jackson.core.util.DefaultPrettyPrinter;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.ObjectWriter;
 import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpServer;
 import harness.agent.Agent;
 import harness.agent.AgentLoader;
-import harness.core.Conversation;
-import harness.core.RelaySummarizer;
 import harness.core.Span;
-import harness.store.Job;
+import harness.eval.CaseResult;
+import harness.eval.EvalRunner;
+import harness.eval.GoldenCase;
 import harness.store.RunQueue;
 import harness.store.RunStore;
+import harness.store.TurnRow;
 import harness.tools.Tool;
 import harness.tools.ToolLoader;
-import harness.tools.ToolRegistry;
 import java.io.IOException;
 import java.io.OutputStream;
 import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
-import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
 import java.util.Optional;
 import java.util.concurrent.Executors;
 
 /**
- * The harness as a small service on the JDK's own HttpServer, JSON in and out:
- * GET /agents, GET and PUT /agents/{name}, GET /tools, POST /runs (the job row and its
- * queue message, 202 with the job id at once; a worker runs the loop), GET /runs/{id} (the
- * job row, its steps, the answer when DONE), GET /runs/{id}/events (Server-Sent Events:
- * every stored step from Last-Event-ID on, then live until the job ends) and GET /dlq (the
- * jobs the workers gave up on). Agents and tools stay files on disk; runs live in the
- * store, so this process does not care which worker ran the loop, and a client that goes
- * away does not stop its run.
+ * The harness as a small service on the JDK's own HttpServer, JSON in and out: GET /agents
+ * and /agents/{name}, GET /tools, POST /runs (the turn row and its queue message, 202 with
+ * the turn id at once; a worker runs the loop; a conversationId in the body adds a turn to
+ * an earlier conversation), GET /turns/{id} (the turn row, its spans, the answer when DONE;
+ * /runs/{id} is the same), GET /turns/{id}/events (Server-Sent Events: every stored span
+ * from Last-Event-ID on, then live until the turn ends) and POST /evals (the golden set,
+ * scored in this process). Agents and tools stay files on disk; turns live in the store, so
+ * this process does not care which worker ran the loop, and a client that goes away does
+ * not stop its turn.
  */
 public class HttpApi {
 
@@ -44,17 +47,23 @@ public class HttpApi {
     public static final long POLL_MS = 200;
 
     private static final ObjectMapper JSON = new ObjectMapper();
+    /** Pretty JSON so curl is readable; the eval table also puts every array element on its own line. */
+    private static final ObjectWriter PRETTY = JSON.writerWithDefaultPrettyPrinter();
+    private static final ObjectWriter PRETTY_LINES = JSON.writer(
+            new DefaultPrettyPrinter().withArrayIndenter(DefaultIndenter.SYSTEM_LINEFEED_INSTANCE));
 
     private final Path agentsDir;
     private final Path toolsDir;
+    private final Path golden;
     private final RunStore store;
     private final RunQueue queue;
     private HttpServer server;
     private volatile boolean stopped;
 
-    public HttpApi(Path agentsDir, Path toolsDir, RunStore store, RunQueue queue) {
+    public HttpApi(Path agentsDir, Path toolsDir, Path golden, RunStore store, RunQueue queue) {
         this.agentsDir = agentsDir;
         this.toolsDir = toolsDir;
+        this.golden = golden;
         this.store = store;
         this.queue = queue;
     }
@@ -71,7 +80,7 @@ public class HttpApi {
         return server.getAddress().getPort();
     }
 
-    /** Stops listening; an open event stream ends at its next poll. Runs in flight finish on their own. */
+    /** Stops listening; an open event stream ends at its next poll. Turns in flight belong to the workers. */
     public void stop() {
         stopped = true;
         server.stop(0);
@@ -99,31 +108,27 @@ public class HttpApi {
     private int route(HttpExchange exchange, String method, String path) throws IOException {
         String[] parts = path.replaceAll("^/+|/+$", "").split("/");
         boolean agents = parts[0].equals("agents");
-        boolean runs = parts[0].equals("runs");
+        boolean turns = parts[0].equals("turns") || parts[0].equals("runs");
         if (parts.length == 1 && agents) {
             return method.equals("GET") ? listAgents(exchange) : methodNotAllowed(method, path);
         }
         if (parts.length == 2 && agents) {
-            return switch (method) {
-                case "GET" -> getAgent(exchange, parts[1]);
-                case "PUT" -> putAgent(exchange, parts[1]);
-                default -> methodNotAllowed(method, path);
-            };
+            return method.equals("GET") ? getAgent(exchange, parts[1]) : methodNotAllowed(method, path);
         }
         if (parts.length == 1 && parts[0].equals("tools")) {
             return method.equals("GET") ? listTools(exchange) : methodNotAllowed(method, path);
         }
-        if (parts.length == 1 && runs) {
-            return method.equals("POST") ? startRun(exchange) : methodNotAllowed(method, path);
+        if (parts.length == 1 && turns) {
+            return method.equals("POST") ? submit(exchange) : methodNotAllowed(method, path);
         }
-        if (parts.length == 2 && runs) {
-            return method.equals("GET") ? getRun(exchange, parts[1]) : methodNotAllowed(method, path);
+        if (parts.length == 2 && turns) {
+            return method.equals("GET") ? getTurn(exchange, parts[1]) : methodNotAllowed(method, path);
         }
-        if (parts.length == 3 && runs && parts[2].equals("events")) {
+        if (parts.length == 3 && turns && parts[2].equals("events")) {
             return method.equals("GET") ? events(exchange, parts[1]) : methodNotAllowed(method, path);
         }
-        if (parts.length == 1 && parts[0].equals("dlq")) {
-            return method.equals("GET") ? deadLetters(exchange) : methodNotAllowed(method, path);
+        if (parts.length == 1 && parts[0].equals("evals")) {
+            return method.equals("POST") ? evals(exchange) : methodNotAllowed(method, path);
         }
         throw new HttpError(404, "no endpoint " + method + " " + path);
     }
@@ -141,29 +146,6 @@ public class HttpApi {
     private int getAgent(HttpExchange exchange, String name) throws IOException {
         Agent agent = findAgent(name).orElseThrow(() -> new HttpError(404, "no agent named " + name));
         return send(exchange, 200, agentJson(agent));
-    }
-
-    /** The builder experience: the body is the agent file; it is checked, then written to agents/{name}.json. */
-    private int putAgent(HttpExchange exchange, String name) throws IOException {
-        Agent agent;
-        try {
-            agent = AgentLoader.parse(readJson(exchange), "PUT /agents/" + name);
-        } catch (IllegalArgumentException e) {
-            throw new HttpError(400, e.getMessage());
-        }
-        if (!agent.name().equals(name)) {
-            throw new HttpError(400, "the body names agent \"" + agent.name() + "\" but the path says \"" + name + "\"");
-        }
-        ToolRegistry registry = ToolLoader.load(toolsDir);
-        for (String tool : agent.toolNames()) {
-            if (registry.find(tool).isEmpty()) {
-                throw new HttpError(400, "no tool named " + tool + " in " + toolsDir + "/");
-            }
-        }
-        Path file = agentsDir.resolve(name + ".json");
-        boolean existed = Files.exists(file);
-        Files.writeString(file, JSON.writerWithDefaultPrettyPrinter().writeValueAsString(agentJson(agent)) + System.lineSeparator());
-        return send(exchange, existed ? 200 : 201, agentJson(agent));
     }
 
     private int listTools(HttpExchange exchange) throws IOException {
@@ -186,61 +168,74 @@ public class HttpApi {
         return send(exchange, 200, list);
     }
 
-    // --- runs: rows in the store ---
+    // --- turns: rows in the store ---
 
-    /** Writes the job row and its queue message, answers 202 with the id; a worker runs the loop. */
-    private int startRun(HttpExchange exchange) throws IOException {
+    /**
+     * Writes the turn row and its queue message and answers 202 with the turn id (the job
+     * id); a worker runs the loop. Without a conversationId the body's agent opens a new
+     * conversation; with one, the turn joins that conversation and its agent.
+     */
+    private int submit(HttpExchange exchange) throws IOException {
         JsonNode body = readJson(exchange);
-        String agentName = text(body, "agent");
         String question = text(body, "question");
-        Agent agent = findAgent(agentName).orElseThrow(() -> new HttpError(400, "no agent named " + agentName));
-        String jobId = queue.submit(agent.name(), question);
-        return send(exchange, 202, JSON.createObjectNode().put("jobId", jobId).put("status", Job.Status.QUEUED.name()));
+        String conversationId;
+        Agent agent;
+        if (body.hasNonNull("conversationId")) {
+            conversationId = body.get("conversationId").asText();
+            String agentName;
+            try {
+                agentName = store.conversation(conversationId).agent();
+            } catch (IllegalArgumentException e) {
+                throw new HttpError(400, "no conversation " + conversationId);
+            }
+            if (body.hasNonNull("agent") && !body.get("agent").asText().equals(agentName)) {
+                throw new HttpError(400, "conversation " + conversationId + " belongs to agent " + agentName);
+            }
+            agent = findAgent(agentName).orElseThrow(() -> new HttpError(400, "no agent named " + agentName));
+        } else {
+            String agentName = text(body, "agent");
+            agent = findAgent(agentName).orElseThrow(() -> new HttpError(400, "no agent named " + agentName));
+            conversationId = store.newConversation(agent.name());
+        }
+        String turnId = queue.submit(conversationId, question);
+        return send(exchange, 202, JSON.createObjectNode().put("turnId", turnId).put("jobId", turnId)
+                .put("conversationId", conversationId).put("status", TurnRow.Status.QUEUED.name()));
     }
 
-    /** The job row, its steps, and the answer once the job is DONE. */
-    private int getRun(HttpExchange exchange, String id) throws IOException {
-        Job job = requireJob(id);
-        List<Span> rows = store.load(id);
-        ObjectNode reply = JSON.valueToTree(job);
-        reply.set("steps", JSON.valueToTree(rows));
-        if (job.status() == Job.Status.DONE) {
-            reply.put("answer", answer(job, rows));
-        }
+    /** The turn row (the answer is on it once DONE) and its spans. */
+    private int getTurn(HttpExchange exchange, String id) throws IOException {
+        TurnRow turn = requireTurn(id);
+        ObjectNode reply = JSON.valueToTree(turn);
+        reply.set("spans", JSON.valueToTree(store.load(id)));
         return send(exchange, 200, reply);
     }
 
-    /** The dead-letter list: the job rows the queue gave up on (status DEAD), oldest first. */
-    private int deadLetters(HttpExchange exchange) throws IOException {
-        return send(exchange, 200, JSON.valueToTree(store.withStatus(Job.Status.DEAD)));
-    }
-
     /**
-     * Server-Sent Events. Every stored step after Last-Event-ID (or ?after=N) goes out at
-     * once, id = the step number; then the store is polled until the job is DONE, FAILED
-     * or DEAD, and a final "done" event carries the answer. The status is read before the
-     * rows, so when it says the job ended, every row is already in hand. The rows come
+     * Server-Sent Events. Every stored span after Last-Event-ID (or ?after=N) goes out at
+     * once, id = the span number; then the store is polled until the turn is DONE or
+     * FAILED, and a final "done" event carries the answer. The status is read before the
+     * rows, so when it says the turn ended, every row is already in hand. The rows come
      * from the store, so it does not matter which worker wrote them, or whether one died
      * and another took over.
      */
     private int events(HttpExchange exchange, String id) throws IOException {
-        requireJob(id);
+        requireTurn(id);
         int after = after(exchange);
         exchange.getResponseHeaders().set("Content-Type", "text/event-stream; charset=utf-8");
         exchange.getResponseHeaders().set("Cache-Control", "no-cache");
         exchange.sendResponseHeaders(200, 0);
         try (OutputStream out = exchange.getResponseBody()) {
             while (!stopped) {
-                Job job = store.job(id);
+                TurnRow turn = store.turn(id);
                 for (Span row : store.load(id, after + 1)) {
-                    write(out, "id: " + row.step() + "\nevent: step\ndata: " + JSON.writeValueAsString(row) + "\n\n");
-                    after = row.step();
+                    write(out, "id: " + row.span() + "\nevent: step\ndata: " + JSON.writeValueAsString(row) + "\n\n");
+                    after = row.span();
                 }
                 out.flush();
-                if (job.status().ended()) {
-                    ObjectNode done = JSON.createObjectNode().put("jobId", id).put("status", job.status().name());
-                    if (job.status() == Job.Status.DONE) {
-                        done.put("answer", answer(job, store.load(id)));
+                if (turn.status().ended()) {
+                    ObjectNode done = JSON.createObjectNode().put("turnId", id).put("status", turn.status().name());
+                    if (turn.status() == TurnRow.Status.DONE) {
+                        done.put("answer", turn.answer());
                     }
                     write(out, "event: done\ndata: " + done + "\n\n");
                     return 200;
@@ -253,21 +248,40 @@ public class HttpApi {
         return 200;
     }
 
-    /** The answer of a finished run, read back from its rows the way resume reads them. */
-    private String answer(Job job, List<Span> rows) {
-        Agent agent = findAgent(job.agent())
-                .orElseThrow(() -> new IllegalStateException("agent " + job.agent() + " of run " + job.id() + " no longer exists"));
-        return new RelaySummarizer().summarize(Conversation.rebuild(job.id(), agent, rows).turns().getLast());
-    }
+    // --- evals: the golden set, scored here ---
 
-    private Job requireJob(String id) {
-        if (!store.exists(id)) {
-            throw new HttpError(404, "no run " + id);
+    /** Runs the golden set in this process, each case on its own in-memory store, and returns the table: one object per case, plus the lines as printed. */
+    private int evals(HttpExchange exchange) throws IOException {
+        EvalRunner runner = new EvalRunner(AgentLoader.loadAll(agentsDir), ToolLoader.load(toolsDir));
+        List<CaseResult> results = runner.run(GoldenCase.loadAll(golden));
+        ObjectNode reply = JSON.createObjectNode();
+        ArrayNode cases = reply.putArray("cases");
+        ArrayNode lines = JSON.createArrayNode();
+        for (int i = 0; i < results.size(); i++) {
+            CaseResult result = results.get(i);
+            ObjectNode node = cases.addObject().put("n", i + 1).put("passed", result.passed())
+                    .put("agent", result.golden().agent()).put("question", result.golden().question());
+            node.set("tools", JSON.valueToTree(result.tools()));
+            node.put("passes", result.passes()).put("ms", result.ms()).put("answer", result.answer());
+            node.set("failures", JSON.valueToTree(result.failures()));
+            lines.add(result.line(i + 1));
         }
-        return store.job(id);
+        lines.add(EvalRunner.footer(results));
+        reply.put("footer", EvalRunner.footer(results));
+        reply.set("lines", lines);
+        return send(exchange, 200, reply, PRETTY_LINES);
     }
 
-    /** Last-Event-ID wins, then ?after=N, else 0: the step the client has already seen. */
+    // --- helpers ---
+
+    private TurnRow requireTurn(String id) {
+        if (!store.exists(id)) {
+            throw new HttpError(404, "no turn " + id);
+        }
+        return store.turn(id);
+    }
+
+    /** Last-Event-ID wins, then ?after=N, else 0: the span the client has already seen. */
     private static int after(HttpExchange exchange) {
         String value = exchange.getRequestHeaders().getFirst("Last-Event-ID");
         String query = exchange.getRequestURI().getQuery();
@@ -281,11 +295,9 @@ public class HttpApi {
         try {
             return value == null ? 0 : Integer.parseInt(value.trim());
         } catch (NumberFormatException e) {
-            throw new HttpError(400, "Last-Event-ID or after must be a step number, got " + value);
+            throw new HttpError(400, "Last-Event-ID or after must be a span number, got " + value);
         }
     }
-
-    // --- helpers ---
 
     private Optional<Agent> findAgent(String name) {
         return AgentLoader.loadAll(agentsDir).stream().filter(agent -> agent.name().equals(name)).findFirst();
@@ -320,9 +332,13 @@ public class HttpApi {
         throw new HttpError(405, method + " is not allowed on " + path);
     }
 
-    /** JSON out, pretty printed so curl is readable; the status is returned for the log line. */
     private static int send(HttpExchange exchange, int status, JsonNode body) throws IOException {
-        byte[] bytes = (JSON.writerWithDefaultPrettyPrinter().writeValueAsString(body) + "\n").getBytes(StandardCharsets.UTF_8);
+        return send(exchange, status, body, PRETTY);
+    }
+
+    /** JSON out, pretty printed so curl is readable; the status is returned for the log line. */
+    private static int send(HttpExchange exchange, int status, JsonNode body, ObjectWriter writer) throws IOException {
+        byte[] bytes = (writer.writeValueAsString(body) + "\n").getBytes(StandardCharsets.UTF_8);
         exchange.getResponseHeaders().set("Content-Type", "application/json; charset=utf-8");
         exchange.sendResponseHeaders(status, bytes.length);
         try (OutputStream out = exchange.getResponseBody()) {

@@ -1,479 +1,717 @@
-mini agent harness demo · 2026-10-15T02:36Z · java version "25.0.1" 2025-10-21 LTS
+mini agent harness demo · 2026-10-15T03:20Z · java version "25.0.1" 2025-10-21 LTS
 
 === compile v2 ===
 $ mvn -q compile      (classes to target/classes, Jackson and sqlite-jdbc to target/lib)
 compiled
+$ rm -f harness.db harness.db-wal harness.db-shm      (the demo starts from an empty store)
 
-=== agents: an agent is a file in agents/ ===
-$ java --enable-native-access=ALL-UNNAMED -cp "target/classes:target/lib/*" harness.cli.Main agents
-chaos       Runs misbehaving tools (a hang, a throw) next to a good one  tools: order_status, hang_forever, throw_boom · maxPasses 5 · toolTimeout 1000 ms
-inventory   Answers stock questions only                                tools: stock_status · maxPasses 2 · toolTimeout 2000 ms
-support     Answers order, shipment and stock questions                 tools: order_status, shipping_status, stock_status · maxPasses 5 · toolTimeout 2000 ms
+=== the HTTP face: serve, and one worker, in the background ===
+$ java --enable-native-access=ALL-UNNAMED -cp "target/classes:target/lib/*" harness.cli.Main serve --port 0
+listening on http://localhost:58833 · agents/ tools/ harness.db · POST /runs queues a turn for a worker · ctrl-c stops it
+(the server stays in the background; --port 0 picked a free port, the manual uses 8080)
+$ java --enable-native-access=ALL-UNNAMED -cp "target/classes:target/lib/*" harness.cli.Main worker
+worker pid 31582 · lease 2000 ms · polling every 500 ms, ctrl-c stops it · harness.db
+(the worker stays in the background too: the server only queues turns, this process runs them)
 
-=== tools: a tool is a file in tools/, its type picks the adapter ===
-$ java --enable-native-access=ALL-UNNAMED -cp "target/classes:target/lib/*" harness.cli.Main tools
-hang_forever      sleep    Sleeps for a minute: the runaway tool                     keywords [hang] · id ORD-\d+
-order_status      lookup   Status of an order, by order id                           keywords [order] · id ORD-\d+
-refund_order      lookup   Refunds an order, by order id (listed by no agent)        keywords [refund] · id ORD-\d+
-shipping_status   lookup   Status of a shipment, by shipment id                      keywords [shipment, shipping, tracking] · id SHP-\d+
-stock_status      lookup   Units in stock for a product, by product id               keywords [stock, inventory, available] · id PRD-\d+
-throw_boom        fail     Throws on every call: the broken tool                     keywords [boom] · no id
+=== agents and tools: metadata files, read over GET /agents and GET /tools ===
+$ curl -s http://localhost:58833/agents
+[ {
+  "name" : "chaos",
+  "description" : "Runs misbehaving tools (a hang, a throw) next to a good one",
+  "tools" : [ "order_status", "hang_forever", "throw_boom" ],
+  "maxPasses" : 5,
+  "toolTimeoutMs" : 1000
+}, {
+  "name" : "inventory",
+  "description" : "Answers stock questions only",
+  "tools" : [ "stock_status" ],
+  "maxPasses" : 2,
+  "toolTimeoutMs" : 2000
+}, {
+  "name" : "support",
+  "description" : "Answers order, shipment and stock questions",
+  "tools" : [ "order_status", "shipping_status", "stock_status" ],
+  "maxPasses" : 5,
+  "toolTimeoutMs" : 2000
+} ]
+$ curl -s http://localhost:58833/tools
+[ {
+  "name" : "hang_forever",
+  "type" : "sleep",
+  "description" : "Sleeps for a minute: the runaway tool",
+  "inputField" : "orderId",
+  "match" : {
+    "keywords" : [ "hang" ],
+    "idPattern" : "ORD-\\d+"
+  }
+}, {
+  "name" : "order_status",
+  "type" : "lookup",
+  "description" : "Status of an order, by order id",
+  "inputField" : "orderId",
+  "match" : {
+    "keywords" : [ "order" ],
+    "idPattern" : "ORD-\\d+"
+  }
+}, {
+  "name" : "refund_order",
+  "type" : "lookup",
+  "description" : "Refunds an order, by order id (listed by no agent)",
+  "inputField" : "orderId",
+  "match" : {
+    "keywords" : [ "refund" ],
+    "idPattern" : "ORD-\\d+"
+  }
+}, {
+  "name" : "shipping_status",
+  "type" : "lookup",
+  "description" : "Status of a shipment, by shipment id",
+  "inputField" : "shipmentId",
+  "match" : {
+    "keywords" : [ "shipment", "shipping", "tracking" ],
+    "idPattern" : "SHP-\\d+"
+  }
+}, {
+  "name" : "stock_status",
+  "type" : "lookup",
+  "description" : "Units in stock for a product, by product id",
+  "inputField" : "productId",
+  "match" : {
+    "keywords" : [ "stock", "inventory", "available" ],
+    "idPattern" : "PRD-\\d+"
+  }
+}, {
+  "name" : "throw_boom",
+  "type" : "fail",
+  "description" : "Throws on every call: the broken tool",
+  "match" : {
+    "keywords" : [ "boom" ]
+  }
+} ]
 
-=== eval: the golden set, two FAILs left in on purpose ===
+=== a turn: POST /runs answers with the turn id at once; GET /turns/{id} once the worker is done ===
+$ curl -s -X POST http://localhost:58833/runs -d '{"agent":"support","question":"What is the status of order ORD-1?"}'
+{
+  "turnId" : "r-478b",
+  "jobId" : "r-478b",
+  "conversationId" : "c-2674",
+  "status" : "QUEUED"
+}
+(202 came back at once with the turn QUEUED; the worker took it, and one second later the turn row says DONE, who ran it, the answer, and the spans:)
+$ curl -s http://localhost:58833/turns/r-478b
+{
+  "id" : "r-478b",
+  "conversationId" : "c-2674",
+  "agent" : "support",
+  "question" : "What is the status of order ORD-1?",
+  "answer" : "Order ORD-1: SHIPPED, shipment SHP-1",
+  "status" : "DONE",
+  "claimedBy" : "31582",
+  "attempts" : 1,
+  "createdAt" : 1792034458861,
+  "updatedAt" : 1792034459271,
+  "spans" : [ {
+    "turnId" : "r-478b",
+    "span" : 1,
+    "pass" : 1,
+    "kind" : "LLM",
+    "request" : "pass 1",
+    "response" : "ToolCall[toolName=order_status, input={orderId=ORD-1}]",
+    "status" : "OK",
+    "ms" : 4,
+    "attrs" : {
+      "question" : "What is the status of order ORD-1?",
+      "tool" : "order_status",
+      "orderId" : "ORD-1"
+    }
+  }, {
+    "turnId" : "r-478b",
+    "span" : 2,
+    "pass" : 1,
+    "kind" : "TOOL",
+    "request" : "order_status {orderId=ORD-1}",
+    "response" : "Order ORD-1: SHIPPED, shipment SHP-1",
+    "status" : "OK",
+    "ms" : 0,
+    "attrs" : {
+      "tool" : "order_status",
+      "orderId" : "ORD-1",
+      "key" : "r-478b/1"
+    }
+  }, {
+    "turnId" : "r-478b",
+    "span" : 3,
+    "pass" : 2,
+    "kind" : "LLM",
+    "request" : "pass 2",
+    "response" : "Done[]",
+    "status" : "OK",
+    "ms" : 0,
+    "attrs" : {
+      "question" : "What is the status of order ORD-1?"
+    }
+  } ]
+}
+
+=== the stream: GET /turns/{id}/events sends every span with its number as the event id, then done; a reconnect with Last-Event-ID gets only the tail ===
+$ curl -sN --max-time 5 http://localhost:58833/turns/r-478b/events
+id: 1
+event: step
+data: {"turnId":"r-478b","span":1,"pass":1,"kind":"LLM","request":"pass 1","response":"ToolCall[toolName=order_status, input={orderId=ORD-1}]","status":"OK","ms":4,"attrs":{"question":"What is the status of order ORD-1?","tool":"order_status","orderId":"ORD-1"}}
+
+id: 2
+event: step
+data: {"turnId":"r-478b","span":2,"pass":1,"kind":"TOOL","request":"order_status {orderId=ORD-1}","response":"Order ORD-1: SHIPPED, shipment SHP-1","status":"OK","ms":0,"attrs":{"tool":"order_status","orderId":"ORD-1","key":"r-478b/1"}}
+
+id: 3
+event: step
+data: {"turnId":"r-478b","span":3,"pass":2,"kind":"LLM","request":"pass 2","response":"Done[]","status":"OK","ms":0,"attrs":{"question":"What is the status of order ORD-1?"}}
+
+event: done
+data: {"turnId":"r-478b","status":"DONE","answer":"Order ORD-1: SHIPPED, shipment SHP-1"}
+
+(a client that reconnects sends the last id it saw:)
+$ curl -sN --max-time 5 -H 'Last-Event-ID: 2' http://localhost:58833/turns/r-478b/events
+id: 3
+event: step
+data: {"turnId":"r-478b","span":3,"pass":2,"kind":"LLM","request":"pass 2","response":"Done[]","status":"OK","ms":0,"attrs":{"question":"What is the status of order ORD-1?"}}
+
+event: done
+data: {"turnId":"r-478b","status":"DONE","answer":"Order ORD-1: SHIPPED, shipment SHP-1"}
+
+
+=== a live stream on chaos: opened right after the POST, it waits for each row; the hang is cut off at the agent's toolTimeoutMs ===
+$ curl -s -X POST http://localhost:58833/runs -d '{"agent":"chaos","question":"Please hang while checking ORD-1"}'
+{
+  "turnId" : "r-8659",
+  "jobId" : "r-8659",
+  "conversationId" : "c-f89f",
+  "status" : "QUEUED"
+}
+$ curl -sN --max-time 5 http://localhost:58833/turns/r-8659/events
+id: 1
+event: step
+data: {"turnId":"r-8659","span":1,"pass":1,"kind":"LLM","request":"pass 1","response":"ToolCall[toolName=hang_forever, input={orderId=ORD-1}]","status":"OK","ms":0,"attrs":{"question":"Please hang while checking ORD-1","tool":"hang_forever","orderId":"ORD-1"}}
+
+id: 2
+event: step
+data: {"turnId":"r-8659","span":2,"pass":1,"kind":"TOOL","request":"hang_forever {orderId=ORD-1}","response":"cut off after 1000 ms","status":"TIMEOUT","ms":1000,"attrs":{"tool":"hang_forever","orderId":"ORD-1","key":"r-8659/1"}}
+
+id: 3
+event: step
+data: {"turnId":"r-8659","span":3,"pass":2,"kind":"LLM","request":"pass 2","response":"Done[]","status":"OK","ms":0,"attrs":{"question":"Please hang while checking ORD-1"}}
+
+event: done
+data: {"turnId":"r-8659","status":"DONE","answer":"Tool hang_forever TIMEOUT: cut off after 1000 ms"}
+
+
+=== a follow-up turn in the same conversation: the model sees the earlier turn, the repeated call is not run again ===
+$ curl -s -X POST http://localhost:58833/runs -d '{"conversationId":"c-2674","question":"What is the status of order ORD-1, again?"}'
+{
+  "turnId" : "r-45b2",
+  "jobId" : "r-45b2",
+  "conversationId" : "c-2674",
+  "status" : "QUEUED"
+}
+(the spans are numbered on from the first turn; the TOOL span is DEDUPED and points at span 2 of the first turn:)
+$ curl -s http://localhost:58833/turns/r-45b2
+{
+  "id" : "r-45b2",
+  "conversationId" : "c-2674",
+  "agent" : "support",
+  "question" : "What is the status of order ORD-1, again?",
+  "answer" : "Order ORD-1: SHIPPED, shipment SHP-1",
+  "status" : "DONE",
+  "claimedBy" : "31582",
+  "attempts" : 1,
+  "createdAt" : 1792034461497,
+  "updatedAt" : 1792034461827,
+  "spans" : [ {
+    "turnId" : "r-45b2",
+    "span" : 4,
+    "pass" : 1,
+    "kind" : "LLM",
+    "request" : "pass 1",
+    "response" : "ToolCall[toolName=order_status, input={orderId=ORD-1}]",
+    "status" : "OK",
+    "ms" : 0,
+    "attrs" : {
+      "question" : "What is the status of order ORD-1, again?",
+      "tool" : "order_status",
+      "orderId" : "ORD-1"
+    }
+  }, {
+    "turnId" : "r-45b2",
+    "span" : 5,
+    "pass" : 1,
+    "kind" : "TOOL",
+    "request" : "order_status {orderId=ORD-1}",
+    "response" : "unchanged, see step 2",
+    "status" : "DEDUPED",
+    "ms" : 0,
+    "attrs" : {
+      "tool" : "order_status",
+      "orderId" : "ORD-1",
+      "key" : "r-45b2/4",
+      "ref" : "2"
+    }
+  }, {
+    "turnId" : "r-45b2",
+    "span" : 6,
+    "pass" : 2,
+    "kind" : "LLM",
+    "request" : "pass 2",
+    "response" : "Done[]",
+    "status" : "OK",
+    "ms" : 0,
+    "attrs" : {
+      "question" : "What is the status of order ORD-1, again?"
+    }
+  } ]
+}
+
+(the worker's own log: it received the three turns, ran them, acked them; the server ran no loop)
+worker pid 31582 · lease 2000 ms · polling every 500 ms, ctrl-c stops it · harness.db
+received r-478b: attempt 1 · agent support · "What is the status of order ORD-1?"
+  1  LLM   pass 1 -> ToolCall[toolName=order_status, input={orderId=ORD-1}]  [OK 4 ms]
+  2  TOOL  order_status {orderId=ORD-1} -> Order ORD-1: SHIPPED, shipment SHP-1  [OK 0 ms]
+  3  LLM   pass 2 -> Done[]  [OK 0 ms]
+answer: Order ORD-1: SHIPPED, shipment SHP-1
+done r-478b · 3 spans · 59 ms · DONE in harness.db · acked · handler calls: order_status=1
+received r-8659: attempt 1 · agent chaos · "Please hang while checking ORD-1"
+  1  LLM   pass 1 -> ToolCall[toolName=hang_forever, input={orderId=ORD-1}]  [OK 0 ms]
+  2  TOOL  hang_forever {orderId=ORD-1} -> cut off after 1000 ms  [TIMEOUT 1000 ms]
+  3  LLM   pass 2 -> Done[]  [OK 0 ms]
+answer: Tool hang_forever TIMEOUT: cut off after 1000 ms
+done r-8659 · 3 spans · 1019 ms · DONE in harness.db · acked · handler calls: order_status=1
+received r-45b2: attempt 1 · agent support · "What is the status of order ORD-1, again?"
+  4  LLM   pass 1 -> ToolCall[toolName=order_status, input={orderId=ORD-1}]  [OK 0 ms]
+  5  TOOL  order_status {orderId=ORD-1} -> unchanged, see step 2  [DEDUPED 0 ms]
+  6  LLM   pass 2 -> Done[]  [OK 0 ms]
+answer: Order ORD-1: SHIPPED, shipment SHP-1
+done r-45b2 · 3 spans · 9 ms · DONE in harness.db · acked · handler calls: order_status=1
+(worker stopped; the server stays up, so the next turns wait on the queue until a worker is started by hand)
+
+=== two tools in one pass run together: a worker started with --slow shows wall < work ===
+$ curl -s -X POST http://localhost:58833/runs -d '{"agent":"support","question":"Status of order ORD-2 and is product PRD-1 available?"}'
+{
+  "turnId" : "r-b722",
+  "jobId" : "r-b722",
+  "conversationId" : "c-7590",
+  "status" : "QUEUED"
+}
+(--slow gives every lookup 300 ms of simulated latency; two lookups in one pass take one sleep of wall time, not two:)
+$ java --enable-native-access=ALL-UNNAMED -cp "target/classes:target/lib/*" harness.cli.Main worker --once --slow
+worker pid 31629 · lease 2000 ms · once · slow: every lookup sleeps 300 ms (latency simulated) · harness.db
+received r-b722: attempt 1 · agent support · "Status of order ORD-2 and is product PRD-1 available?"
+  1  LLM   pass 1 -> ToolCalls[calls=[ToolCall[toolName=order_status, input={orderId=ORD-2}], ToolCall[toolName=stock_status, input={productId=PRD-1}]]]  [OK 4 ms]
+  2  TOOL  order_status {orderId=ORD-2} -> Order ORD-2: PROCESSING  [OK 302 ms]
+  3  TOOL  stock_status {productId=PRD-1} -> Product PRD-1: 42 units in stock  [OK 302 ms]
+  4  NOTE  ran 2 tools together: wall 305 ms, work 604 ms  [OK 305 ms]
+  5  LLM   pass 2 -> Done[]  [OK 0 ms]
+answer: Order ORD-2: PROCESSING
+Product PRD-1: 42 units in stock
+done r-b722 · 5 spans · 368 ms · DONE in harness.db · acked · handler calls: order_status=1, stock_status=1
+$ curl -s http://localhost:58833/turns/r-b722
+{
+  "id" : "r-b722",
+  "conversationId" : "c-7590",
+  "agent" : "support",
+  "question" : "Status of order ORD-2 and is product PRD-1 available?",
+  "answer" : "Order ORD-2: PROCESSING\nProduct PRD-1: 42 units in stock",
+  "status" : "DONE",
+  "claimedBy" : "31629",
+  "attempts" : 1,
+  "createdAt" : 1792034462589,
+  "updatedAt" : 1792034463437,
+  "spans" : [ {
+    "turnId" : "r-b722",
+    "span" : 1,
+    "pass" : 1,
+    "kind" : "LLM",
+    "request" : "pass 1",
+    "response" : "ToolCalls[calls=[ToolCall[toolName=order_status, input={orderId=ORD-2}], ToolCall[toolName=stock_status, input={productId=PRD-1}]]]",
+    "status" : "OK",
+    "ms" : 4,
+    "attrs" : {
+      "question" : "Status of order ORD-2 and is product PRD-1 available?",
+      "tool" : "order_status,stock_status",
+      "orderId" : "ORD-2",
+      "productId" : "PRD-1"
+    }
+  }, {
+    "turnId" : "r-b722",
+    "span" : 2,
+    "pass" : 1,
+    "kind" : "TOOL",
+    "request" : "order_status {orderId=ORD-2}",
+    "response" : "Order ORD-2: PROCESSING",
+    "status" : "OK",
+    "ms" : 302,
+    "attrs" : {
+      "tool" : "order_status",
+      "orderId" : "ORD-2",
+      "key" : "r-b722/1"
+    }
+  }, {
+    "turnId" : "r-b722",
+    "span" : 3,
+    "pass" : 1,
+    "kind" : "TOOL",
+    "request" : "stock_status {productId=PRD-1}",
+    "response" : "Product PRD-1: 42 units in stock",
+    "status" : "OK",
+    "ms" : 302,
+    "attrs" : {
+      "tool" : "stock_status",
+      "productId" : "PRD-1",
+      "key" : "r-b722/1"
+    }
+  }, {
+    "turnId" : "r-b722",
+    "span" : 4,
+    "pass" : 1,
+    "kind" : "NOTE",
+    "request" : "ran 2 tools together: wall 305 ms, work 604 ms",
+    "response" : "",
+    "status" : "OK",
+    "ms" : 305,
+    "attrs" : { }
+  }, {
+    "turnId" : "r-b722",
+    "span" : 5,
+    "pass" : 2,
+    "kind" : "LLM",
+    "request" : "pass 2",
+    "response" : "Done[]",
+    "status" : "OK",
+    "ms" : 0,
+    "attrs" : {
+      "question" : "Status of order ORD-2 and is product PRD-1 available?"
+    }
+  } ]
+}
+
+=== durability: the queue, the lease, the dead worker ===
+(submit writes the turn row QUEUED and its queue message without HTTP, and comes back with the id:)
+$ java --enable-native-access=ALL-UNNAMED -cp "target/classes:target/lib/*" harness.cli.Main submit --agent support "What is the status of order ORD-1?"
+submitted r-5a9e · QUEUED in harness.db · agent support · "What is the status of order ORD-1?"
+$ curl -s http://localhost:58833/turns/r-5a9e
+{
+  "id" : "r-5a9e",
+  "conversationId" : "c-28f7",
+  "agent" : "support",
+  "question" : "What is the status of order ORD-1?",
+  "answer" : null,
+  "status" : "QUEUED",
+  "claimedBy" : null,
+  "attempts" : 0,
+  "createdAt" : 1792034463944,
+  "updatedAt" : 1792034463944,
+  "spans" : [ ]
+}
+(a worker takes it with a 2000 ms lease and dies right after its 2nd row is persisted: exit 3, no ack)
+$ java --enable-native-access=ALL-UNNAMED -cp "target/classes:target/lib/*" harness.cli.Main worker --once --crash-after 2 --visibility-ms 2000
+worker pid 31638 · lease 2000 ms · once · harness.db
+received r-5a9e: attempt 1 · agent support · "What is the status of order ORD-1?"
+  1  LLM   pass 1 -> ToolCall[toolName=order_status, input={orderId=ORD-1}]  [OK 3 ms]
+  2  TOOL  order_status {orderId=ORD-1} -> Order ORD-1: SHIPPED, shipment SHP-1  [OK 0 ms]
+crash: exit 3 right after row 2 of turn r-5a9e was persisted (simulated) · handler calls: order_status=1
+(process exited with code 3; the turn row says RUNNING, the message is still queued but hidden until the lease runs out)
+$ sleep 2
+(the lease has run out, so the next worker receives the same message again and resumes from the last saved step:)
+$ java --enable-native-access=ALL-UNNAMED -cp "target/classes:target/lib/*" harness.cli.Main worker --once
+worker pid 31642 · lease 2000 ms · once · harness.db
+received again: attempt 2, lease had expired · r-5a9e resumes from step 2
+  3  NOTE  resumed from step 2  [OK 0 ms]
+  4  LLM   pass 2 -> Done[]  [OK 1 ms]
+answer: Order ORD-1: SHIPPED, shipment SHP-1
+done r-5a9e · 4 spans · 27 ms · DONE in harness.db · acked · handler calls: none
+(the API reads the same rows, whoever wrote them: DONE, attempt 2, claimed by the second worker's pid, all four spans)
+$ curl -s http://localhost:58833/turns/r-5a9e
+{
+  "id" : "r-5a9e",
+  "conversationId" : "c-28f7",
+  "agent" : "support",
+  "question" : "What is the status of order ORD-1?",
+  "answer" : "Order ORD-1: SHIPPED, shipment SHP-1",
+  "status" : "DONE",
+  "claimedBy" : "31642",
+  "attempts" : 2,
+  "createdAt" : 1792034463944,
+  "updatedAt" : 1792034467037,
+  "spans" : [ {
+    "turnId" : "r-5a9e",
+    "span" : 1,
+    "pass" : 1,
+    "kind" : "LLM",
+    "request" : "pass 1",
+    "response" : "ToolCall[toolName=order_status, input={orderId=ORD-1}]",
+    "status" : "OK",
+    "ms" : 3,
+    "attrs" : {
+      "question" : "What is the status of order ORD-1?",
+      "tool" : "order_status",
+      "orderId" : "ORD-1"
+    }
+  }, {
+    "turnId" : "r-5a9e",
+    "span" : 2,
+    "pass" : 1,
+    "kind" : "TOOL",
+    "request" : "order_status {orderId=ORD-1}",
+    "response" : "Order ORD-1: SHIPPED, shipment SHP-1",
+    "status" : "OK",
+    "ms" : 0,
+    "attrs" : {
+      "tool" : "order_status",
+      "orderId" : "ORD-1",
+      "key" : "r-5a9e/1"
+    }
+  }, {
+    "turnId" : "r-5a9e",
+    "span" : 3,
+    "pass" : 1,
+    "kind" : "NOTE",
+    "request" : "resumed from step 2",
+    "response" : "",
+    "status" : "OK",
+    "ms" : 0,
+    "attrs" : { }
+  }, {
+    "turnId" : "r-5a9e",
+    "span" : 4,
+    "pass" : 2,
+    "kind" : "LLM",
+    "request" : "pass 2",
+    "response" : "Done[]",
+    "status" : "OK",
+    "ms" : 1,
+    "attrs" : {
+      "question" : "What is the status of order ORD-1?"
+    }
+  } ]
+}
+
+=== eval over HTTP: POST /evals scores the golden set in the server; two FAILs left in on purpose ===
+$ curl -s -X POST http://localhost:58833/evals
+{
+  "cases" : [
+    {
+      "n" : 1,
+      "passed" : true,
+      "agent" : "support",
+      "question" : "What is the status of order ORD-1?",
+      "tools" : [
+        "order_status"
+      ],
+      "passes" : 2,
+      "ms" : 3,
+      "answer" : "Order ORD-1: SHIPPED, shipment SHP-1",
+      "failures" : [ ]
+    },
+    {
+      "n" : 2,
+      "passed" : true,
+      "agent" : "support",
+      "question" : "Where is my shipment SHP-1?",
+      "tools" : [
+        "shipping_status"
+      ],
+      "passes" : 2,
+      "ms" : 0,
+      "answer" : "Shipment SHP-1: IN TRANSIT, arriving 2026-10-16",
+      "failures" : [ ]
+    },
+    {
+      "n" : 3,
+      "passed" : true,
+      "agent" : "support",
+      "question" : "Is product PRD-2 available?",
+      "tools" : [
+        "stock_status"
+      ],
+      "passes" : 2,
+      "ms" : 0,
+      "answer" : "Product PRD-2: OUT OF STOCK",
+      "failures" : [ ]
+    },
+    {
+      "n" : 4,
+      "passed" : true,
+      "agent" : "support",
+      "question" : "What is the status of order ORD-99?",
+      "tools" : [
+        "order_status"
+      ],
+      "passes" : 2,
+      "ms" : 0,
+      "answer" : "Order ORD-99 not found",
+      "failures" : [ ]
+    },
+    {
+      "n" : 5,
+      "passed" : true,
+      "agent" : "support",
+      "question" : "What is the weather today?",
+      "tools" : [ ],
+      "passes" : 1,
+      "ms" : 0,
+      "answer" : "No tool for this question.",
+      "failures" : [ ]
+    },
+    {
+      "n" : 6,
+      "passed" : true,
+      "agent" : "chaos",
+      "question" : "Please hang while checking ORD-1",
+      "tools" : [
+        "hang_forever"
+      ],
+      "passes" : 2,
+      "ms" : 1005,
+      "answer" : "Tool hang_forever TIMEOUT: cut off after 1000 ms",
+      "failures" : [ ]
+    },
+    {
+      "n" : 7,
+      "passed" : true,
+      "agent" : "chaos",
+      "question" : "boom",
+      "tools" : [
+        "throw_boom"
+      ],
+      "passes" : 2,
+      "ms" : 0,
+      "answer" : "Tool throw_boom ERROR: Tool failed: boom",
+      "failures" : [ ]
+    },
+    {
+      "n" : 8,
+      "passed" : true,
+      "agent" : "support",
+      "question" : "Status of order ORD-2 and is product PRD-1 available?",
+      "tools" : [
+        "order_status",
+        "stock_status"
+      ],
+      "passes" : 2,
+      "ms" : 3,
+      "answer" : "Order ORD-2: PROCESSING\nProduct PRD-1: 42 units in stock",
+      "failures" : [ ]
+    },
+    {
+      "n" : 9,
+      "passed" : true,
+      "agent" : "inventory",
+      "question" : "How many PRD-1 do we have in stock?",
+      "tools" : [
+        "stock_status"
+      ],
+      "passes" : 2,
+      "ms" : 0,
+      "answer" : "Product PRD-1: 42 units in stock",
+      "failures" : [ ]
+    },
+    {
+      "n" : 10,
+      "passed" : true,
+      "agent" : "inventory",
+      "question" : "refund order ORD-1",
+      "tools" : [ ],
+      "passes" : 1,
+      "ms" : 0,
+      "answer" : "No tool for this question.",
+      "failures" : [ ]
+    },
+    {
+      "n" : 11,
+      "passed" : false,
+      "agent" : "support",
+      "question" : "reorder ORD-1",
+      "tools" : [
+        "order_status"
+      ],
+      "passes" : 2,
+      "ms" : 0,
+      "answer" : "Order ORD-1: SHIPPED, shipment SHP-1",
+      "failures" : [
+        "tool_choice: expected [] got [order_status]",
+        "answer: expected \"No tool\" got \"Order ORD-1: SHIPPED, shipment SHP-1\""
+      ]
+    },
+    {
+      "n" : 12,
+      "passed" : false,
+      "agent" : "support",
+      "question" : "track my parcel SHP-3",
+      "tools" : [ ],
+      "passes" : 1,
+      "ms" : 0,
+      "answer" : "No tool for this question.",
+      "failures" : [
+        "tool_choice: expected [shipping_status] got []",
+        "answer: expected \"DELIVERED\" got \"No tool for this question.\""
+      ]
+    }
+  ],
+  "footer" : "harness: tool_choice 10/12 · stopped_by_done 12/12 · errors_surfaced 12/12 · p50 0 ms | agent: answer 10/12",
+  "lines" : [
+    " 1  PASS  support    What is the status of order ORD-1?                      ran order_status                 2 passes      3 ms",
+    " 2  PASS  support    Where is my shipment SHP-1?                             ran shipping_status              2 passes      0 ms",
+    " 3  PASS  support    Is product PRD-2 available?                             ran stock_status                 2 passes      0 ms",
+    " 4  PASS  support    What is the status of order ORD-99?                     ran order_status                 2 passes      0 ms",
+    " 5  PASS  support    What is the weather today?                              ran no tool                      1 pass       0 ms",
+    " 6  PASS  chaos      Please hang while checking ORD-1                        ran hang_forever                 2 passes   1005 ms",
+    " 7  PASS  chaos      boom                                                    ran throw_boom                   2 passes      0 ms",
+    " 8  PASS  support    Status of order ORD-2 and is product PRD-1 available?   ran order_status,stock_status    2 passes      3 ms",
+    " 9  PASS  inventory  How many PRD-1 do we have in stock?                     ran stock_status                 2 passes      0 ms",
+    "10  PASS  inventory  refund order ORD-1                                      ran no tool                      1 pass       0 ms",
+    "11  FAIL  support    reorder ORD-1                                           ran order_status                 2 passes      0 ms  tool_choice: expected [] got [order_status]; answer: expected \"No tool\" got \"Order ORD-1: SHIPPED, shipment SHP-1\"",
+    "12  FAIL  support    track my parcel SHP-3                                   ran no tool                      1 pass       0 ms  tool_choice: expected [shipping_status] got []; answer: expected \"DELIVERED\" got \"No tool for this question.\"",
+    "harness: tool_choice 10/12 · stopped_by_done 12/12 · errors_surfaced 12/12 · p50 0 ms | agent: answer 10/12"
+  ]
+}
+
+(the server's own log, one line per request:)
+listening on http://localhost:58833 · agents/ tools/ harness.db · POST /runs queues a turn for a worker · ctrl-c stops it
+GET /agents -> 200
+GET /tools -> 200
+POST /runs -> 202
+GET /turns/r-478b -> 200
+GET /turns/r-478b/events -> 200
+GET /turns/r-478b/events -> 200
+POST /runs -> 202
+GET /turns/r-8659/events -> 200
+POST /runs -> 202
+GET /turns/r-45b2 -> 200
+POST /runs -> 202
+GET /turns/r-b722 -> 200
+GET /turns/r-5a9e -> 200
+GET /turns/r-5a9e -> 200
+POST /evals -> 200
+(server stopped)
+
+=== the CLI that remains: serve, worker, submit, eval, replay ===
+(serve, worker and submit ran above; replay prints a turn's stored rows; eval prints the table POST /evals returns)
+$ java --enable-native-access=ALL-UNNAMED -cp "target/classes:target/lib/*" harness.cli.Main replay r-5a9e
+  1  LLM   pass 1 -> ToolCall[toolName=order_status, input={orderId=ORD-1}]  [OK 3 ms]
+  2  TOOL  order_status {orderId=ORD-1} -> Order ORD-1: SHIPPED, shipment SHP-1  [OK 0 ms]
+  3  NOTE  resumed from step 2  [OK 0 ms]
+  4  LLM   pass 2 -> Done[]  [OK 1 ms]
 $ java --enable-native-access=ALL-UNNAMED -cp "target/classes:target/lib/*" harness.cli.Main eval
  1  PASS  support    What is the status of order ORD-1?                      ran order_status                 2 passes     11 ms
  2  PASS  support    Where is my shipment SHP-1?                             ran shipping_status              2 passes      0 ms
  3  PASS  support    Is product PRD-2 available?                             ran stock_status                 2 passes      0 ms
  4  PASS  support    What is the status of order ORD-99?                     ran order_status                 2 passes      0 ms
  5  PASS  support    What is the weather today?                              ran no tool                      1 pass       0 ms
- 6  PASS  chaos      Please hang while checking ORD-1                        ran hang_forever                 2 passes   1007 ms
+ 6  PASS  chaos      Please hang while checking ORD-1                        ran hang_forever                 2 passes   1013 ms
  7  PASS  chaos      boom                                                    ran throw_boom                   2 passes      0 ms
- 8  PASS  support    Status of order ORD-2 and is product PRD-1 available?   ran order_status,stock_status    2 passes      2 ms
+ 8  PASS  support    Status of order ORD-2 and is product PRD-1 available?   ran order_status,stock_status    2 passes      3 ms
  9  PASS  inventory  How many PRD-1 do we have in stock?                     ran stock_status                 2 passes      0 ms
 10  PASS  inventory  refund order ORD-1                                      ran no tool                      1 pass       0 ms
 11  FAIL  support    reorder ORD-1                                           ran order_status                 2 passes      0 ms  tool_choice: expected [] got [order_status]; answer: expected "No tool" got "Order ORD-1: SHIPPED, shipment SHP-1"
 12  FAIL  support    track my parcel SHP-3                                   ran no tool                      1 pass       0 ms  tool_choice: expected [shipping_status] got []; answer: expected "DELIVERED" got "No tool for this question."
 harness: tool_choice 10/12 · stopped_by_done 12/12 · errors_surfaced 12/12 · p50 0 ms | agent: answer 10/12
-
-=== a plain run: LLM row, TOOL row, LLM row, answer; every row lands in harness.db ===
-$ java --enable-native-access=ALL-UNNAMED -cp "target/classes:target/lib/*" harness.cli.Main run --agent support "What is the status of order ORD-1?"
-  1  LLM   pass 1 -> ToolCall[toolName=order_status, input={orderId=ORD-1}]  [OK 5 ms]
-  2  TOOL  order_status {orderId=ORD-1} -> Order ORD-1: SHIPPED, shipment SHP-1  [OK 0 ms]
-  3  LLM   pass 2 -> Done[]  [OK 0 ms]
-answer: Order ORD-1: SHIPPED, shipment SHP-1
-run r-4408 · 2 passes · 1 tool calls · 21 ms · DONE in harness.db · handler calls: order_status=1
-
-=== the --slow parallel run: two tools in one pass, wall < work ===
-$ java --enable-native-access=ALL-UNNAMED -cp "target/classes:target/lib/*" harness.cli.Main run --agent support "Status of order ORD-2 and is product PRD-1 available?" --slow
-slow: every lookup sleeps 300 ms before answering (latency simulated)
-  1  LLM   pass 1 -> ToolCalls[calls=[ToolCall[toolName=order_status, input={orderId=ORD-2}], ToolCall[toolName=stock_status, input={productId=PRD-1}]]]  [OK 6 ms]
-  2  TOOL  order_status {orderId=ORD-2} -> Order ORD-2: PROCESSING  [OK 304 ms]
-  3  TOOL  stock_status {productId=PRD-1} -> Product PRD-1: 42 units in stock  [OK 304 ms]
-  4  NOTE  ran 2 tools together: wall 307 ms, work 608 ms  [OK 307 ms]
-  5  LLM   pass 2 -> Done[]  [OK 0 ms]
-answer: Order ORD-2: PROCESSING
-Product PRD-1: 42 units in stock
-run r-5ef3 · 2 passes · 2 tool calls · 332 ms · DONE in harness.db · handler calls: order_status=1, stock_status=1
-
-=== the crash and the resume: exit 3 after row 1 persists, resume runs the decided call ===
-$ java --enable-native-access=ALL-UNNAMED -cp "target/classes:target/lib/*" harness.cli.Main run --agent support "What is the status of order ORD-1?" --crash-after 1
-  1  LLM   pass 1 -> ToolCall[toolName=order_status, input={orderId=ORD-1}]  [OK 4 ms]
-crash: exit 3 right after row 1 of run r-f324 was persisted (simulated) · handler calls: none
-(process exited with code 3; the rows of r-f324 survived in harness.db and its job row still says RUNNING, so:)
-$ java --enable-native-access=ALL-UNNAMED -cp "target/classes:target/lib/*" harness.cli.Main resume r-f324
-  2  NOTE  resumed from step 1  [OK 0 ms]
-  3  TOOL  order_status {orderId=ORD-1} -> Order ORD-1: SHIPPED, shipment SHP-1  [OK 0 ms]
-  4  LLM   pass 2 -> Done[]  [OK 1 ms]
-answer: Order ORD-1: SHIPPED, shipment SHP-1
-run r-f324 · 2 passes · 1 tool calls · 30 ms · DONE in harness.db · handler calls: order_status=1
-
-=== the other crash window: the tool ran, the process died before its row; resume runs it again ===
-$ java --enable-native-access=ALL-UNNAMED -cp "target/classes:target/lib/*" harness.cli.Main run --agent support "Where is my shipment SHP-1?" --crash-before-persist
-  1  LLM   pass 1 -> ToolCall[toolName=shipping_status, input={shipmentId=SHP-1}]  [OK 19 ms]
-crash: exit 3 after shipping_status ran, before its TOOL row of run r-0441 was written (simulated) · handler calls: shipping_status=1
-(the handler ran once in that process and the TOOL row never landed; harness.db holds only the LLM row of r-0441, so resume runs the decided call again:)
-$ java --enable-native-access=ALL-UNNAMED -cp "target/classes:target/lib/*" harness.cli.Main resume r-0441
-  2  NOTE  resumed from step 1  [OK 0 ms]
-  3  TOOL  shipping_status {shipmentId=SHP-1} -> Shipment SHP-1: IN TRANSIT, arriving 2026-10-16  [OK 0 ms]
-  4  LLM   pass 2 -> Done[]  [OK 1 ms]
-answer: Shipment SHP-1: IN TRANSIT, arriving 2026-10-16
-run r-0441 · 2 passes · 1 tool calls · 29 ms · DONE in harness.db · handler calls: shipping_status=1
-
-=== the hang on chaos: hang_forever is cut off at the agent's toolTimeoutMs ===
-$ java --enable-native-access=ALL-UNNAMED -cp "target/classes:target/lib/*" harness.cli.Main run --agent chaos "Please hang while checking ORD-1"
-  1  LLM   pass 1 -> ToolCall[toolName=hang_forever, input={orderId=ORD-1}]  [OK 5 ms]
-  2  TOOL  hang_forever {orderId=ORD-1} -> cut off after 1000 ms  [TIMEOUT 1000 ms]
-  3  LLM   pass 2 -> Done[]  [OK 0 ms]
-answer: Tool hang_forever TIMEOUT: cut off after 1000 ms
-run r-ea3e · 2 passes · 1 tool calls · 1029 ms · DONE in harness.db · handler calls: none
-
-=== the dedupe run: the same question twice in one conversation runs the handler once ===
-$ java --enable-native-access=ALL-UNNAMED -cp "target/classes:target/lib/*" harness.cli.Main run --agent support "status of order ORD-1" "status of order ORD-1 again"
-  1  LLM   pass 1 -> ToolCall[toolName=order_status, input={orderId=ORD-1}]  [OK 5 ms]
-  2  TOOL  order_status {orderId=ORD-1} -> Order ORD-1: SHIPPED, shipment SHP-1  [OK 0 ms]
-  3  LLM   pass 2 -> Done[]  [OK 0 ms]
-answer: Order ORD-1: SHIPPED, shipment SHP-1
-  4  LLM   pass 1 -> ToolCall[toolName=order_status, input={orderId=ORD-1}]  [OK 0 ms]
-  5  TOOL  order_status {orderId=ORD-1} -> unchanged, see step 2  [DEDUPED 0 ms]
-  6  LLM   pass 2 -> Done[]  [OK 0 ms]
-answer: Order ORD-1: SHIPPED, shipment SHP-1
-run r-b67d · 4 passes · 2 tool calls · 24 ms · DONE in harness.db · handler calls: order_status=1
-
-=== the HTTP API: serve and a worker, POST /runs, GET /runs/{id}, the SSE stream, PUT /agents/{name} ===
-$ java --enable-native-access=ALL-UNNAMED -cp "target/classes:target/lib/*" harness.cli.Main serve --port 0
-listening on http://localhost:50352 · agents/ tools/ harness.db · POST /runs queues a job for a worker · ctrl-c stops it
-(the server stays in the background; --port 0 picked a free port, the manual uses 8080)
-$ java --enable-native-access=ALL-UNNAMED -cp "target/classes:target/lib/*" harness.cli.Main worker
-worker pid 27688 · lease 2000 ms · max receives 3 · polling every 500 ms, ctrl-c stops it · harness.db
-(the worker stays in the background too: the server only queues jobs, this process runs them)
-
-$ curl -s -X POST http://localhost:50352/runs -d '{"agent":"support","question":"What is the status of order ORD-1?"}'
-{
-  "jobId" : "r-3921",
-  "status" : "QUEUED"
-}
-(202 came back at once with the job QUEUED; the worker took it, and one second later the job row says DONE, who ran it, and the steps:)
-$ curl -s http://localhost:50352/runs/r-3921
-{
-  "id" : "r-3921",
-  "conversationId" : "r-3921",
-  "agent" : "support",
-  "question" : "What is the status of order ORD-1?",
-  "status" : "DONE",
-  "claimedBy" : "27688",
-  "attempts" : 1,
-  "createdAt" : 1792031793824,
-  "updatedAt" : 1792031794292,
-  "steps" : [ {
-    "run" : "r-3921",
-    "step" : 1,
-    "turn" : 1,
-    "pass" : 1,
-    "kind" : "LLM",
-    "request" : "pass 1",
-    "response" : "ToolCall[toolName=order_status, input={orderId=ORD-1}]",
-    "status" : "OK",
-    "ms" : 3,
-    "attrs" : {
-      "question" : "What is the status of order ORD-1?",
-      "tool" : "order_status",
-      "orderId" : "ORD-1"
-    }
-  }, {
-    "run" : "r-3921",
-    "step" : 2,
-    "turn" : 1,
-    "pass" : 1,
-    "kind" : "TOOL",
-    "request" : "order_status {orderId=ORD-1}",
-    "response" : "Order ORD-1: SHIPPED, shipment SHP-1",
-    "status" : "OK",
-    "ms" : 0,
-    "attrs" : {
-      "tool" : "order_status",
-      "orderId" : "ORD-1",
-      "key" : "r-3921/1"
-    }
-  }, {
-    "run" : "r-3921",
-    "step" : 3,
-    "turn" : 1,
-    "pass" : 2,
-    "kind" : "LLM",
-    "request" : "pass 2",
-    "response" : "Done[]",
-    "status" : "OK",
-    "ms" : 0,
-    "attrs" : {
-      "question" : "What is the status of order ORD-1?"
-    }
-  } ],
-  "answer" : "Order ORD-1: SHIPPED, shipment SHP-1"
-}
-
-(the event stream: every stored step with its step number as the event id, then done with the answer)
-$ curl -sN --max-time 5 http://localhost:50352/runs/r-3921/events
-id: 1
-event: step
-data: {"run":"r-3921","step":1,"turn":1,"pass":1,"kind":"LLM","request":"pass 1","response":"ToolCall[toolName=order_status, input={orderId=ORD-1}]","status":"OK","ms":3,"attrs":{"question":"What is the status of order ORD-1?","tool":"order_status","orderId":"ORD-1"}}
-
-id: 2
-event: step
-data: {"run":"r-3921","step":2,"turn":1,"pass":1,"kind":"TOOL","request":"order_status {orderId=ORD-1}","response":"Order ORD-1: SHIPPED, shipment SHP-1","status":"OK","ms":0,"attrs":{"tool":"order_status","orderId":"ORD-1","key":"r-3921/1"}}
-
-id: 3
-event: step
-data: {"run":"r-3921","step":3,"turn":1,"pass":2,"kind":"LLM","request":"pass 2","response":"Done[]","status":"OK","ms":0,"attrs":{"question":"What is the status of order ORD-1?"}}
-
-event: done
-data: {"jobId":"r-3921","status":"DONE","answer":"Order ORD-1: SHIPPED, shipment SHP-1"}
-
-(a client that reconnects sends the last id it saw and gets only the tail)
-$ curl -sN --max-time 5 -H 'Last-Event-ID: 2' http://localhost:50352/runs/r-3921/events
-id: 3
-event: step
-data: {"run":"r-3921","step":3,"turn":1,"pass":2,"kind":"LLM","request":"pass 2","response":"Done[]","status":"OK","ms":0,"attrs":{"question":"What is the status of order ORD-1?"}}
-
-event: done
-data: {"jobId":"r-3921","status":"DONE","answer":"Order ORD-1: SHIPPED, shipment SHP-1"}
-
-
-(a live one: the stream is opened right after the POST and waits for each row; the hang takes 1000 ms to be cut off)
-$ curl -s -X POST http://localhost:50352/runs -d '{"agent":"chaos","question":"Please hang while checking ORD-1"}'
-{
-  "jobId" : "r-0468",
-  "status" : "QUEUED"
-}
-$ curl -sN --max-time 5 http://localhost:50352/runs/r-0468/events
-id: 1
-event: step
-data: {"run":"r-0468","step":1,"turn":1,"pass":1,"kind":"LLM","request":"pass 1","response":"ToolCall[toolName=hang_forever, input={orderId=ORD-1}]","status":"OK","ms":0,"attrs":{"question":"Please hang while checking ORD-1","tool":"hang_forever","orderId":"ORD-1"}}
-
-id: 2
-event: step
-data: {"run":"r-0468","step":2,"turn":1,"pass":1,"kind":"TOOL","request":"hang_forever {orderId=ORD-1}","response":"cut off after 1000 ms","status":"TIMEOUT","ms":1000,"attrs":{"tool":"hang_forever","orderId":"ORD-1","key":"r-0468/1"}}
-
-id: 3
-event: step
-data: {"run":"r-0468","step":3,"turn":1,"pass":2,"kind":"LLM","request":"pass 2","response":"Done[]","status":"OK","ms":0,"attrs":{"question":"Please hang while checking ORD-1"}}
-
-event: done
-data: {"jobId":"r-0468","status":"DONE","answer":"Tool hang_forever TIMEOUT: cut off after 1000 ms"}
-
-
-(the builder experience: an agent is a file, PUT writes it; a tool that does not exist is refused first)
-$ curl -s -X PUT http://localhost:50352/agents/returns -d @- <<< '{"name":"returns","description":"Refunds an order, by order id","tools":["refund_orders"],"maxPasses":3,"toolTimeoutMs":2000}'
-{
-  "error" : "no tool named refund_orders in tools/"
-}
-$ curl -s -X PUT http://localhost:50352/agents/returns -d @- <<< '{"name":"returns","description":"Refunds an order, by order id","tools":["refund_order"],"maxPasses":3,"toolTimeoutMs":2000}'
-{
-  "name" : "returns",
-  "description" : "Refunds an order, by order id",
-  "tools" : [ "refund_order" ],
-  "maxPasses" : 3,
-  "toolTimeoutMs" : 2000
-}
-$ curl -s http://localhost:50352/agents/returns
-{
-  "name" : "returns",
-  "description" : "Refunds an order, by order id",
-  "tools" : [ "refund_order" ],
-  "maxPasses" : 3,
-  "toolTimeoutMs" : 2000
-}
-$ cat agents/returns.json
-{
-  "name" : "returns",
-  "description" : "Refunds an order, by order id",
-  "tools" : [ "refund_order" ],
-  "maxPasses" : 3,
-  "toolTimeoutMs" : 2000
-}
-
-(the worker's own log: it received both jobs, ran them, acked them; the server ran no loop)
-worker pid 27688 · lease 2000 ms · max receives 3 · polling every 500 ms, ctrl-c stops it · harness.db
-received r-3921: attempt 1 · agent support · "What is the status of order ORD-1?"
-  1  LLM   pass 1 -> ToolCall[toolName=order_status, input={orderId=ORD-1}]  [OK 3 ms]
-  2  TOOL  order_status {orderId=ORD-1} -> Order ORD-1: SHIPPED, shipment SHP-1  [OK 0 ms]
-  3  LLM   pass 2 -> Done[]  [OK 0 ms]
-answer: Order ORD-1: SHIPPED, shipment SHP-1
-done r-3921 · 3 steps · 57 ms · DONE in harness.db · acked · handler calls: order_status=1
-received r-0468: attempt 1 · agent chaos · "Please hang while checking ORD-1"
-  1  LLM   pass 1 -> ToolCall[toolName=hang_forever, input={orderId=ORD-1}]  [OK 0 ms]
-  2  TOOL  hang_forever {orderId=ORD-1} -> cut off after 1000 ms  [TIMEOUT 1000 ms]
-  3  LLM   pass 2 -> Done[]  [OK 0 ms]
-answer: Tool hang_forever TIMEOUT: cut off after 1000 ms
-done r-0468 · 3 steps · 1020 ms · DONE in harness.db · acked · handler calls: order_status=1
-(worker stopped; agents/returns.json removed again so the agent list is back to three; the server stays up for the next section)
-
-=== durability: the queue, the lease, the dead worker ===
-(no worker is running now. submit writes the job row QUEUED and its queue message, and comes back with the id:)
-$ java --enable-native-access=ALL-UNNAMED -cp "target/classes:target/lib/*" harness.cli.Main submit --agent support "What is the status of order ORD-1?"
-submitted r-9441 · QUEUED in harness.db · agent support · "What is the status of order ORD-1?"
-$ curl -s http://localhost:50352/runs/r-9441
-{
-  "id" : "r-9441",
-  "conversationId" : "r-9441",
-  "agent" : "support",
-  "question" : "What is the status of order ORD-1?",
-  "status" : "QUEUED",
-  "claimedBy" : null,
-  "attempts" : 0,
-  "createdAt" : 1792031797031,
-  "updatedAt" : 1792031797031,
-  "steps" : [ ]
-}
-(a worker takes it with a 2000 ms lease and dies right after its 2nd row is persisted: exit 3, no ack)
-$ java --enable-native-access=ALL-UNNAMED -cp "target/classes:target/lib/*" harness.cli.Main worker --once --crash-after 2 --visibility-ms 2000
-worker pid 27732 · lease 2000 ms · max receives 3 · once · harness.db
-received r-9441: attempt 1 · agent support · "What is the status of order ORD-1?"
-  1  LLM   pass 1 -> ToolCall[toolName=order_status, input={orderId=ORD-1}]  [OK 3 ms]
-  2  TOOL  order_status {orderId=ORD-1} -> Order ORD-1: SHIPPED, shipment SHP-1  [OK 0 ms]
-crash: exit 3 right after row 2 of run r-9441 was persisted (simulated) · handler calls: order_status=1
-(process exited with code 3; the job row says RUNNING, the message is still queued but hidden until the lease runs out)
-$ sleep 2
-(the lease has run out, so the next worker receives the same message again and resumes from the last saved step:)
-$ java --enable-native-access=ALL-UNNAMED -cp "target/classes:target/lib/*" harness.cli.Main worker --once
-worker pid 27734 · lease 2000 ms · max receives 3 · once · harness.db
-received again: attempt 2, lease had expired · r-9441 resumes from step 2
-  3  NOTE  resumed from step 2  [OK 0 ms]
-  4  LLM   pass 2 -> Done[]  [OK 2 ms]
-answer: Order ORD-1: SHIPPED, shipment SHP-1
-done r-9441 · 4 steps · 29 ms · DONE in harness.db · acked · handler calls: none
-(the API reads the same rows, whoever wrote them: DONE, attempt 2, claimed by the second worker's pid, all four steps)
-$ curl -s http://localhost:50352/runs/r-9441
-{
-  "id" : "r-9441",
-  "conversationId" : "r-9441",
-  "agent" : "support",
-  "question" : "What is the status of order ORD-1?",
-  "status" : "DONE",
-  "claimedBy" : "27734",
-  "attempts" : 2,
-  "createdAt" : 1792031797031,
-  "updatedAt" : 1792031800194,
-  "steps" : [ {
-    "run" : "r-9441",
-    "step" : 1,
-    "turn" : 1,
-    "pass" : 1,
-    "kind" : "LLM",
-    "request" : "pass 1",
-    "response" : "ToolCall[toolName=order_status, input={orderId=ORD-1}]",
-    "status" : "OK",
-    "ms" : 3,
-    "attrs" : {
-      "question" : "What is the status of order ORD-1?",
-      "tool" : "order_status",
-      "orderId" : "ORD-1"
-    }
-  }, {
-    "run" : "r-9441",
-    "step" : 2,
-    "turn" : 1,
-    "pass" : 1,
-    "kind" : "TOOL",
-    "request" : "order_status {orderId=ORD-1}",
-    "response" : "Order ORD-1: SHIPPED, shipment SHP-1",
-    "status" : "OK",
-    "ms" : 0,
-    "attrs" : {
-      "tool" : "order_status",
-      "orderId" : "ORD-1",
-      "key" : "r-9441/1"
-    }
-  }, {
-    "run" : "r-9441",
-    "step" : 3,
-    "turn" : 1,
-    "pass" : 1,
-    "kind" : "NOTE",
-    "request" : "resumed from step 2",
-    "response" : "",
-    "status" : "OK",
-    "ms" : 0,
-    "attrs" : { }
-  }, {
-    "run" : "r-9441",
-    "step" : 4,
-    "turn" : 1,
-    "pass" : 2,
-    "kind" : "LLM",
-    "request" : "pass 2",
-    "response" : "Done[]",
-    "status" : "OK",
-    "ms" : 2,
-    "attrs" : {
-      "question" : "What is the status of order ORD-1?"
-    }
-  } ],
-  "answer" : "Order ORD-1: SHIPPED, shipment SHP-1"
-}
-
-(the dead-letter case: a job whose worker dies after its first row every time; leases of 1000 ms, a second of sleep so each runs out)
-$ java --enable-native-access=ALL-UNNAMED -cp "target/classes:target/lib/*" harness.cli.Main submit --agent support "Where is my shipment SHP-1?"
-submitted r-e50c · QUEUED in harness.db · agent support · "Where is my shipment SHP-1?"
-$ java --enable-native-access=ALL-UNNAMED -cp "target/classes:target/lib/*" harness.cli.Main worker --once --crash-after 1 --visibility-ms 1000
-worker pid 27743 · lease 1000 ms · max receives 3 · once · harness.db
-received r-e50c: attempt 1 · agent support · "Where is my shipment SHP-1?"
-  1  LLM   pass 1 -> ToolCall[toolName=shipping_status, input={shipmentId=SHP-1}]  [OK 3 ms]
-crash: exit 3 right after row 1 of run r-e50c was persisted (simulated) · handler calls: none
-$ sleep 1
-$ java --enable-native-access=ALL-UNNAMED -cp "target/classes:target/lib/*" harness.cli.Main worker --once --crash-after 1 --visibility-ms 1000
-worker pid 27748 · lease 1000 ms · max receives 3 · once · harness.db
-received again: attempt 2, lease had expired · r-e50c resumes from step 1
-  2  NOTE  resumed from step 1  [OK 0 ms]
-crash: exit 3 right after row 2 of run r-e50c was persisted (simulated) · handler calls: none
-$ sleep 1
-$ java --enable-native-access=ALL-UNNAMED -cp "target/classes:target/lib/*" harness.cli.Main worker --once --crash-after 1 --visibility-ms 1000
-worker pid 27751 · lease 1000 ms · max receives 3 · once · harness.db
-received again: attempt 3, lease had expired · r-e50c resumes from step 2
-  3  NOTE  resumed from step 2  [OK 0 ms]
-crash: exit 3 right after row 3 of run r-e50c was persisted (simulated) · handler calls: none
-$ sleep 1
-(three receives, three dead workers; max receives is 3, so the fourth receive does not deliver the message: it dead-letters the job)
-$ java --enable-native-access=ALL-UNNAMED -cp "target/classes:target/lib/*" harness.cli.Main worker --once
-worker pid 27756 · lease 2000 ms · max receives 3 · once · harness.db
-dead-lettered r-e50c: received 4 times, more than max 3 · DEAD in harness.db after 3 attempts
-$ curl -s http://localhost:50352/dlq
-[ {
-  "id" : "r-e50c",
-  "conversationId" : "r-e50c",
-  "agent" : "support",
-  "question" : "Where is my shipment SHP-1?",
-  "status" : "DEAD",
-  "claimedBy" : "27751",
-  "attempts" : 3,
-  "createdAt" : 1792031800687,
-  "updatedAt" : 1792031805890
-} ]
-$ curl -s http://localhost:50352/runs/r-e50c
-{
-  "id" : "r-e50c",
-  "conversationId" : "r-e50c",
-  "agent" : "support",
-  "question" : "Where is my shipment SHP-1?",
-  "status" : "DEAD",
-  "claimedBy" : "27751",
-  "attempts" : 3,
-  "createdAt" : 1792031800687,
-  "updatedAt" : 1792031805890,
-  "steps" : [ {
-    "run" : "r-e50c",
-    "step" : 1,
-    "turn" : 1,
-    "pass" : 1,
-    "kind" : "LLM",
-    "request" : "pass 1",
-    "response" : "ToolCall[toolName=shipping_status, input={shipmentId=SHP-1}]",
-    "status" : "OK",
-    "ms" : 3,
-    "attrs" : {
-      "question" : "Where is my shipment SHP-1?",
-      "tool" : "shipping_status",
-      "shipmentId" : "SHP-1"
-    }
-  }, {
-    "run" : "r-e50c",
-    "step" : 2,
-    "turn" : 1,
-    "pass" : 1,
-    "kind" : "NOTE",
-    "request" : "resumed from step 1",
-    "response" : "",
-    "status" : "OK",
-    "ms" : 0,
-    "attrs" : { }
-  }, {
-    "run" : "r-e50c",
-    "step" : 3,
-    "turn" : 1,
-    "pass" : 1,
-    "kind" : "NOTE",
-    "request" : "resumed from step 2",
-    "response" : "",
-    "status" : "OK",
-    "ms" : 0,
-    "attrs" : { }
-  } ]
-}
-
-(the server's own log, one line per request:)
-listening on http://localhost:50352 · agents/ tools/ harness.db · POST /runs queues a job for a worker · ctrl-c stops it
-POST /runs -> 202
-GET /runs/r-3921 -> 200
-GET /runs/r-3921/events -> 200
-GET /runs/r-3921/events -> 200
-POST /runs -> 202
-GET /runs/r-0468/events -> 200
-PUT /agents/returns -> 400
-PUT /agents/returns -> 201
-GET /agents/returns -> 200
-GET /runs/r-9441 -> 200
-GET /runs/r-9441 -> 200
-GET /dlq -> 200
-GET /runs/r-e50c -> 200
-(server stopped)
 
 demo complete

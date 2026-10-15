@@ -45,7 +45,7 @@ class ResumeTest {
     void crashAfterTheLlmRowIsPersistedResumesWithoutAskingTheModelAgain() {
         Orchestrator first = orchestrator(new CrashingToolCaller(registry, false));
         assertThrows(Crash.class, () -> first.run(QUESTION));
-        String runId = first.conversation().id();
+        String runId = first.conversation().turns().getLast().id();
         assertEquals(List.of(Span.Kind.LLM), kinds(store.load(runId)));
         assertEquals(0, handlerCalls("order_status"), "the tool never ran");
 
@@ -53,7 +53,7 @@ class ResumeTest {
 
         List<Span> rows = store.load(runId);
         assertEquals(List.of(Span.Kind.LLM, Span.Kind.NOTE, Span.Kind.TOOL, Span.Kind.LLM), kinds(rows));
-        assertEquals(List.of(1, 2, 3, 4), rows.stream().map(Span::step).toList());
+        assertEquals(List.of(1, 2, 3, 4), rows.stream().map(Span::span).toList());
         assertEquals("resumed from step 1", rows.get(1).request());
         assertEquals(runId + "/1", rows.get(2).attrs().get("key"), "the key names the row that decided the call");
         assertEquals(1, handlerCalls("order_status"));
@@ -65,7 +65,7 @@ class ResumeTest {
     void crashBeforeTheToolRowIsPersistedRunsThePendingCallAgain() {
         Orchestrator first = orchestrator(new CrashingToolCaller(registry, true));
         assertThrows(Crash.class, () -> first.run(QUESTION));
-        String runId = first.conversation().id();
+        String runId = first.conversation().turns().getLast().id();
         assertEquals(List.of(Span.Kind.LLM), kinds(store.load(runId)));
         assertEquals(1, handlerCalls("order_status"), "the tool did its work but its row was never written");
 
@@ -81,14 +81,14 @@ class ResumeTest {
     @Test
     void crashAfterTheToolRowIsPersistedResumesIntoTheNextPass() {
         RunListener dieAfterRow2 = span -> {
-            if (span.step() == 2) {
+            if (span.span() == 2) {
                 throw new Crash();
             }
         };
         Orchestrator first = new Orchestrator(agent, registry, llm, new ToolCaller(registry),
                 new RelaySummarizer(), store, dieAfterRow2);
         assertThrows(Crash.class, () -> first.run(QUESTION));
-        String runId = first.conversation().id();
+        String runId = first.conversation().turns().getLast().id();
         assertEquals(List.of(Span.Kind.LLM, Span.Kind.TOOL), kinds(store.load(runId)));
 
         assertEquals(ANSWER, orchestrator(new ToolCaller(registry)).resume(runId));
@@ -103,7 +103,7 @@ class ResumeTest {
     @Test
     void resumeRebuildsEarlierTurnsAndFinishesTheInterruptedOne() {
         RunListener dieAfterRow4 = span -> {
-            if (span.step() == 4) {
+            if (span.span() == 4) {
                 throw new Crash();
             }
         };
@@ -111,7 +111,7 @@ class ResumeTest {
                 new RelaySummarizer(), store, dieAfterRow4);
         assertEquals(ANSWER, first.run(QUESTION));
         assertThrows(Crash.class, () -> first.run("Is product PRD-1 available?"));
-        String runId = first.conversation().id();
+        String runId = first.conversation().turns().getLast().id();
 
         Orchestrator second = orchestrator(new ToolCaller(registry));
         assertEquals("Product PRD-1: 42 units in stock", second.resume(runId));
@@ -121,14 +121,15 @@ class ResumeTest {
         assertEquals(QUESTION, turns.get(0).question());
         assertEquals(ANSWER, turns.get(0).answer());
         assertEquals("Is product PRD-1 available?", turns.get(1).question());
-        assertEquals(List.of(1, 1, 1, 2, 2, 2, 2), store.load(runId).stream().map(Span::turn).toList());
+        assertEquals(3, store.load(turns.get(0).id()).size(), "the first turn's rows are its own");
+        assertEquals(List.of(4, 5, 6, 7), store.load(runId).stream().map(Span::span).toList(), "the second turn's rows are numbered on");
     }
 
     @Test
     void resumingAFinishedRunReturnsItsAnswerAndWritesNoRow() {
         Orchestrator first = orchestrator(new ToolCaller(registry));
         first.run(QUESTION);
-        String runId = first.conversation().id();
+        String runId = first.conversation().turns().getLast().id();
 
         assertEquals(ANSWER, orchestrator(new ToolCaller(registry)).resume(runId));
 
@@ -140,7 +141,7 @@ class ResumeTest {
     void theLlmRowCarriesTheDecidedCallAndTheToolRowItsKey() {
         Orchestrator orchestrator = orchestrator(new ToolCaller(registry));
         orchestrator.run(QUESTION);
-        String runId = orchestrator.conversation().id();
+        String runId = orchestrator.conversation().turns().getFirst().id();
 
         List<Span> rows = store.load(runId);
         assertEquals("order_status", rows.get(0).attrs().get("tool"));

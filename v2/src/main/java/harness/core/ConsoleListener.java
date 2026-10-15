@@ -12,6 +12,6 @@ public class ConsoleListener implements RunListener {
     public static String format(Span span) {
         String tail = span.response().isEmpty() ? "" : " -> " + span.response();
         return String.format("%3d  %-4s  %s%s  [%s %d ms]",
-                span.step(), span.kind(), span.request(), tail, span.status(), span.ms());
+                span.span(), span.kind(), span.request(), tail, span.status(), span.ms());
     }
 }

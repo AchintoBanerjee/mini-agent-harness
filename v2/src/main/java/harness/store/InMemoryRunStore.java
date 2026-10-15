@@ -6,72 +6,100 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
-/** Rows and job rows kept in maps, for tests and embedding. Gone when the process ends. */
+/** Conversation rows, turn rows and spans kept in maps, for tests and the eval. Gone when the process ends. */
 public class InMemoryRunStore implements RunStore {
 
-    private final Map<String, Job> jobs = new LinkedHashMap<>();
-    private final Map<String, List<Span>> runs = new LinkedHashMap<>();
+    private final Map<String, ConversationRow> conversations = new LinkedHashMap<>();
+    private final Map<String, TurnRow> turns = new LinkedHashMap<>();
+    private final Map<String, List<Span>> spans = new LinkedHashMap<>();
 
     @Override
-    public String newRun(String agent, String question) {
-        String runId = RunStore.newId();
-        while (runs.containsKey(runId)) {
-            runId = RunStore.newId();
+    public String newConversation(String agent) {
+        String id = RunStore.newId("c");
+        while (conversations.containsKey(id)) {
+            id = RunStore.newId("c");
+        }
+        conversations.put(id, new ConversationRow(id, agent, System.currentTimeMillis()));
+        return id;
+    }
+
+    @Override
+    public String newTurn(String conversationId, String question) {
+        ConversationRow conversation = conversation(conversationId);
+        String turnId = RunStore.newId("r");
+        while (spans.containsKey(turnId)) {
+            turnId = RunStore.newId("r");
         }
         long now = System.currentTimeMillis();
-        jobs.put(runId, new Job(runId, runId, agent, question, Job.Status.QUEUED, null, 0, now, now));
-        runs.put(runId, new ArrayList<>());
-        return runId;
+        turns.put(turnId, new TurnRow(turnId, conversationId, conversation.agent(), question, null,
+                TurnRow.Status.QUEUED, null, 0, now, now));
+        spans.put(turnId, new ArrayList<>());
+        return turnId;
     }
 
     @Override
-    public void append(String runId, Span span) {
-        rows(runId).add(span);
+    public void append(String turnId, Span span) {
+        rows(turnId).add(span);
     }
 
     @Override
-    public List<Span> load(String runId) {
-        return List.copyOf(rows(runId));
+    public List<Span> load(String turnId) {
+        return List.copyOf(rows(turnId));
     }
 
     @Override
-    public boolean exists(String runId) {
-        return runs.containsKey(runId);
+    public boolean exists(String turnId) {
+        return spans.containsKey(turnId);
     }
 
     @Override
-    public Job job(String runId) {
-        rows(runId);
-        return jobs.get(runId);
+    public TurnRow turn(String turnId) {
+        rows(turnId);
+        return turns.get(turnId);
     }
 
     @Override
-    public void setStatus(String runId, Job.Status status) {
-        jobs.put(runId, job(runId).with(status, System.currentTimeMillis()));
+    public ConversationRow conversation(String conversationId) {
+        ConversationRow conversation = conversations.get(conversationId);
+        if (conversation == null) {
+            throw new IllegalArgumentException("no conversation " + conversationId);
+        }
+        return conversation;
     }
 
     @Override
-    public int claim(String runId, String claimedBy) {
-        Job claimed = job(runId).claimedBy(claimedBy, System.currentTimeMillis());
-        jobs.put(runId, claimed);
-        return claimed.attempts();
-    }
-
-    @Override
-    public List<Job> withStatus(Job.Status status) {
-        List<Job> matching = new ArrayList<>();
-        for (Job job : jobs.values()) {
-            if (job.status() == status) {
-                matching.add(job);
+    public List<TurnRow> turns(String conversationId) {
+        List<TurnRow> matching = new ArrayList<>();
+        for (TurnRow turn : turns.values()) {
+            if (turn.conversationId().equals(conversationId)) {
+                matching.add(turn);
             }
         }
         return matching;
     }
 
-    private List<Span> rows(String runId) {
-        List<Span> rows = runs.get(runId);
+    @Override
+    public void setStatus(String turnId, TurnRow.Status status) {
+        TurnRow turn = turn(turnId);
+        turns.put(turnId, turn.with(status, turn.answer(), System.currentTimeMillis()));
+    }
+
+    @Override
+    public void done(String turnId, String answer) {
+        turns.put(turnId, turn(turnId).with(TurnRow.Status.DONE, answer, System.currentTimeMillis()));
+    }
+
+    @Override
+    public int claim(String turnId, String claimedBy) {
+        TurnRow claimed = turn(turnId).claimedBy(claimedBy, System.currentTimeMillis());
+        turns.put(turnId, claimed);
+        return claimed.attempts();
+    }
+
+    private List<Span> rows(String turnId) {
+        List<Span> rows = spans.get(turnId);
         if (rows == null) {
-            throw new IllegalArgumentException("no run " + runId);
+            throw new IllegalArgumentException("no turn " + turnId);
         }
         return rows;
     }

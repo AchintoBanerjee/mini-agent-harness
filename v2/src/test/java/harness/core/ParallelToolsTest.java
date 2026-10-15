@@ -64,7 +64,7 @@ class ParallelToolsTest {
         assertEquals("slow", rows.get(1).attrs().get("tool"), "the slower call's row still comes first");
         assertEquals("quick", rows.get(2).attrs().get("tool"));
         assertTrue(rows.get(1).ms() >= 250 && rows.get(2).ms() < 250, "each row carries its own time: " + rows.get(1).ms() + " / " + rows.get(2).ms());
-        String runId = orchestrator.conversation().id();
+        String runId = orchestrator.conversation().turns().getFirst().id();
         assertEquals(runId + "/1", rows.get(1).attrs().get("key"));
         assertEquals(runId + "/1", rows.get(2).attrs().get("key"), "both rows name the LLM row that decided them");
         Matcher note = TOGETHER.matcher(rows.get(3).request());
@@ -98,13 +98,13 @@ class ParallelToolsTest {
     @Test
     void resumeRunsOnlyTheCallsOfTheBatchWhoseRowsNeverLanded() {
         RunListener dieAfterRow2 = span -> {
-            if (span.step() == 2) {
+            if (span.span() == 2) {
                 throw new ResumeTest.Crash();
             }
         };
         Orchestrator first = new Orchestrator(support, registry, new RuleBasedLLM(), new ToolCaller(registry), new RelaySummarizer(), store, dieAfterRow2);
         assertThrows(ResumeTest.Crash.class, () -> first.run("Status of order ORD-2 and is product PRD-1 available?"));
-        String runId = first.conversation().id();
+        String runId = first.conversation().turns().getFirst().id();
         assertEquals(List.of(Span.Kind.LLM, Span.Kind.TOOL), store.load(runId).stream().map(Span::kind).toList());
         assertEquals(Map.of("order_status", 1, "stock_status", 1), ToolLoader.HANDLER_CALLS, "both ran; only the first row landed");
 

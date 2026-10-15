@@ -5,8 +5,8 @@ import harness.model.LLMProxy;
 import harness.model.ModelReply;
 import harness.model.ToolCall;
 import harness.store.InMemoryRunStore;
-import harness.store.Job;
 import harness.store.RunStore;
+import harness.store.TurnRow;
 import harness.tools.Tool;
 import harness.tools.ToolCaller;
 import harness.tools.ToolRegistry;
@@ -18,17 +18,18 @@ import java.util.Map;
 import java.util.function.Supplier;
 
 /**
- * Owns the loop. Each question becomes a Turn: ask the model, run the tool or tools it
- * names (several in one reply run together, rows in request order), record each as a row,
- * repeat until the model says Done, then summarize. The agent's maxPasses caps the loop;
- * hitting the cap leaves a NOTE row instead of a silent stop. Every row is written to the
- * store before the loop acts on it: the LLM row before the tools run, the TOOL rows before
- * the model is asked again. The LLM row's attrs carry the decided calls, so a run that died
- * between two rows resumes from the log without asking the model again for that decision.
- * Several questions form one conversation: the model sees the earlier turns as Q/A lines,
- * and a call whose tool and input already ran OK anywhere in the conversation is not run
- * again but recorded as DEDUPED, pointing at the step it repeats. The job row follows the
- * loop: RUNNING while a turn runs, DONE when it ends, FAILED if it threw.
+ * Owns the loop. Each question is a Turn (its id the job id): ask the model, run the tool
+ * or tools it names (several in one reply run together, rows in request order), record
+ * each as a span, repeat until the model says Done, then summarize. The agent's maxPasses
+ * caps the loop; hitting the cap leaves a NOTE row instead of a silent stop. Every row is
+ * written to the store before the loop acts on it: the LLM row before the tools run, the
+ * TOOL rows before the model is asked again. The LLM row's attrs carry the decided calls,
+ * so a turn that died between two rows resumes from the store without asking the model
+ * again for that decision. Several turns form one conversation: the model sees the earlier
+ * turns as Q/A lines, and a call whose tool and input already ran OK anywhere in the
+ * conversation is not run again but recorded as DEDUPED, pointing at the span it repeats.
+ * The turn row follows the loop: RUNNING while it runs, DONE with the answer when it ends,
+ * FAILED if it threw.
  */
 public class Orchestrator {
 
@@ -69,83 +70,85 @@ public class Orchestrator {
         this.listener = listener;
     }
 
+    /** A question in this process: the first one opens the conversation, each one is a turn of its own. */
     public String run(String question) {
         if (conversation == null) {
-            conversation = new Conversation(store.newRun(agent.name(), question), agent);
+            conversation = new Conversation(store.newConversation(agent.name()), agent);
         }
-        Turn turn = conversation.turn(question);
-        return tracked(() -> loop(turn, conversation.turns().size(), 1));
+        Turn turn = conversation.turn(store.newTurn(conversation.id(), question), question);
+        return tracked(turn, () -> loop(turn, 1));
     }
 
     /**
-     * The first turn of a job the store already holds: POST /runs writes the job row and
-     * answers with its id at once, then calls this on a thread of its own.
+     * A turn the store already holds and nobody has run: POST /runs or submit wrote its row
+     * and answered with its id at once; a worker calls this. The conversation's earlier
+     * turns are loaded first, so the model sees them.
      */
-    public String start(String jobId, String question) {
-        if (conversation != null) {
-            throw new IllegalStateException("this orchestrator already holds run " + conversation.id());
+    public String start(String turnId) {
+        Turn turn = open(turnId);
+        if (!turn.spans().isEmpty()) {
+            throw new IllegalStateException("turn " + turnId + " already has rows: resume it");
         }
-        conversation = new Conversation(jobId, agent);
-        Turn turn = conversation.turn(question);
-        return tracked(() -> loop(turn, 1, 1));
+        return tracked(turn, () -> loop(turn, 1));
     }
 
     /**
-     * Picks a run up where its log ends. Rebuilds the turns from the rows; if the last
-     * decision has calls with no TOOL row after them, those run first, in order (the model
-     * is not asked again for them), then the loop continues at the next pass. A run whose
-     * last row already closed it (Done, or the maxPasses cut) gets its answer back unchanged.
+     * Picks a turn up where its rows end. If the last decision has calls with no TOOL row
+     * after them, those run first, in order (the model is not asked again for them), then
+     * the loop continues at the next pass. A turn whose last row already closed it (Done, or
+     * the maxPasses cut) gets its answer back unchanged.
      */
-    public String resume(String runId) {
-        if (conversation != null) {
-            throw new IllegalStateException("this orchestrator already holds run " + conversation.id());
-        }
-        List<Span> rows = store.load(runId);
+    public String resume(String turnId) {
+        Turn turn = open(turnId);
+        List<Span> rows = turn.spans();
         if (rows.isEmpty()) {
-            throw new IllegalStateException("run " + runId + " has no rows to resume from");
+            throw new IllegalStateException("turn " + turnId + " has no rows to resume from");
         }
-        conversation = Conversation.rebuild(runId, agent, rows);
-        List<Turn> turns = conversation.turns();
-        for (int i = 0; i < turns.size() - 1; i++) {
-            Turn earlier = turns.get(i);
-            earlier.setAnswer(summarizer.summarize(earlier));
-        }
-        steps = rows.getLast().step();
-        Turn turn = turns.getLast();
-        int turnNo = turns.size();
-
         Span last = rows.getLast();
         boolean closed = last.status() == Span.Status.CUT_SHORT
                 || (last.kind() == Span.Kind.LLM && !last.attrs().containsKey(TOOL));
         if (closed) {
-            return tracked(() -> finish(turn));
+            return tracked(turn, () -> finish(turn));
         }
-        return tracked(() -> continueFrom(turn, turnNo, last));
+        return tracked(turn, () -> continueFrom(turn, last));
     }
 
-    /** The conversation so far: its id is the run id. Null until the first question opens the run. */
+    /** The conversation so far: its turns' ids are the job ids. Null until the first question opens it. */
     public Conversation conversation() {
         return conversation;
     }
 
-    /** The job row follows the work: RUNNING while it runs, DONE at the end, FAILED if it threw. */
-    private String tracked(Supplier<String> work) {
-        String id = conversation.id();
-        store.setStatus(id, Job.Status.RUNNING);
+    /** Loads the turn's conversation from the store, up to the turn itself, and continues the span numbering. */
+    private Turn open(String turnId) {
+        if (conversation != null) {
+            throw new IllegalStateException("this orchestrator already holds conversation " + conversation.id());
+        }
+        conversation = Conversation.load(store, store.turn(turnId).conversationId(), agent, turnId);
+        for (Turn earlier : conversation.turns()) {
+            for (Span row : earlier.spans()) {
+                steps = Math.max(steps, row.span());
+            }
+        }
+        return conversation.turns().getLast();
+    }
+
+    /** The turn row follows the work: RUNNING while it runs, DONE with the answer at the end, FAILED if it threw. */
+    private String tracked(Turn turn, Supplier<String> work) {
+        store.setStatus(turn.id(), TurnRow.Status.RUNNING);
         String answer;
         try {
             answer = work.get();
         } catch (RuntimeException | Error thrown) {
-            store.setStatus(id, Job.Status.FAILED);
+            store.setStatus(turn.id(), TurnRow.Status.FAILED);
             throw thrown;
         }
-        store.setStatus(id, Job.Status.DONE);
+        store.done(turn.id(), answer);
         return answer;
     }
 
     /** Resume's work: note where it picks up, run the decided calls that have no row yet, carry on. */
-    private String continueFrom(Turn turn, int turnNo, Span last) {
-        record(turn, turnNo, last.pass(), Span.Kind.NOTE, "resumed from step " + last.step(), "",
+    private String continueFrom(Turn turn, Span last) {
+        record(turn, last.pass(), Span.Kind.NOTE, "resumed from step " + last.span(), "",
                 Span.Status.OK, 0, Map.of());
 
         Span decided = null;
@@ -160,28 +163,28 @@ public class Orchestrator {
         }
         List<ToolCall> calls = decided.attrs().containsKey(TOOL) ? decidedCalls(decided) : List.of();
         if (toolRowsAfter < calls.size()) {
-            runCalls(turn, turnNo, decided.pass(), calls.subList(toolRowsAfter, calls.size()), decided.step());
+            runCalls(turn, decided.pass(), calls.subList(toolRowsAfter, calls.size()), decided.span());
         }
-        return loop(turn, turnNo, decided.pass() + 1);
+        return loop(turn, decided.pass() + 1);
     }
 
     /** Ask, run, repeat from the given pass until Done or the cap. */
-    private String loop(Turn turn, int turnNo, int fromPass) {
+    private String loop(Turn turn, int fromPass) {
         int maxPasses = agent.maxPasses();
         for (int pass = fromPass; pass <= maxPasses; pass++) {
             long started = System.nanoTime();
             ModelReply reply = llm.next(context(turn), tools);
             List<ToolCall> calls = reply.calls();
-            record(turn, turnNo, pass, Span.Kind.LLM, "pass " + pass, reply.toString(),
+            record(turn, pass, Span.Kind.LLM, "pass " + pass, reply.toString(),
                     Span.Status.OK, Span.millisSince(started), decided(turn.question(), calls));
 
             if (calls.isEmpty()) {
                 return finish(turn);
             }
-            runCalls(turn, turnNo, pass, calls, steps);
+            runCalls(turn, pass, calls, steps);
         }
 
-        record(turn, turnNo, maxPasses, Span.Kind.NOTE, "cut short at maxPasses=" + maxPasses, "",
+        record(turn, maxPasses, Span.Kind.NOTE, "cut short at maxPasses=" + maxPasses, "",
                 Span.Status.CUT_SHORT, 0, Map.of());
         return finish(turn);
     }
@@ -193,7 +196,7 @@ public class Orchestrator {
             if (earlier == turn) {
                 break;
             }
-            history.add("Q: " + earlier.question() + " -> A: " + earlier.answer());
+            history.add("Q: " + earlier.question() + " -> A: " + (earlier.answer() == null ? "(no answer)" : earlier.answer()));
         }
         return new Context(turn.question(), List.copyOf(turn.spans()), history);
     }
@@ -202,9 +205,9 @@ public class Orchestrator {
      * Runs the calls (together when several) and records one TOOL row each, in request
      * order, with that call's own time; a batch also leaves a NOTE row: wall against work.
      * A call whose tool and input already ran OK in this conversation does not run: its
-     * row is DEDUPED and points at the step it repeats.
+     * row is DEDUPED and points at the span it repeats.
      */
-    private void runCalls(Turn turn, int turnNo, int pass, List<ToolCall> calls, int decidingStep) {
+    private void runCalls(Turn turn, int pass, List<ToolCall> calls, int decidingStep) {
         List<Span> repeats = new ArrayList<>();
         List<ToolCall> fresh = new ArrayList<>();
         for (ToolCall call : calls) {
@@ -224,20 +227,20 @@ public class Orchestrator {
             Map<String, String> attrs = new LinkedHashMap<>();
             attrs.put(TOOL, call.toolName());
             attrs.putAll(call.input());
-            attrs.put(KEY, conversation.id() + "/" + decidingStep);
+            attrs.put(KEY, turn.id() + "/" + decidingStep);
             ToolResult result;
             if (repeats.get(i) != null) {
-                attrs.put(REF, String.valueOf(repeats.get(i).step()));
-                result = new ToolResult("unchanged, see step " + repeats.get(i).step(), Span.Status.DEDUPED, 0);
+                attrs.put(REF, String.valueOf(repeats.get(i).span()));
+                result = new ToolResult("unchanged, see step " + repeats.get(i).span(), Span.Status.DEDUPED, 0);
             } else {
                 result = results.get(next++);
                 work += result.ms();
             }
-            record(turn, turnNo, pass, Span.Kind.TOOL, call.toolName() + " " + call.input(),
+            record(turn, pass, Span.Kind.TOOL, call.toolName() + " " + call.input(),
                     result.output(), result.status(), result.ms(), attrs);
         }
         if (fresh.size() > 1) {
-            record(turn, turnNo, pass, Span.Kind.NOTE, "ran " + fresh.size() + " tools together: wall "
+            record(turn, pass, Span.Kind.NOTE, "ran " + fresh.size() + " tools together: wall "
                     + wall + " ms, work " + work + " ms", "", Span.Status.OK, wall, Map.of());
         }
     }
@@ -279,12 +282,12 @@ public class Orchestrator {
     }
 
     /** Write, then act: the row is in the store and announced before the loop takes its next step. */
-    private void record(Turn turn, int turnNo, int pass, Span.Kind kind, String request,
+    private void record(Turn turn, int pass, Span.Kind kind, String request,
                         String response, Span.Status status, long ms, Map<String, String> attrs) {
         steps++;
-        Span span = new Span(conversation.id(), steps, turnNo, pass, kind, request, response, status, ms, attrs);
+        Span span = new Span(turn.id(), steps, pass, kind, request, response, status, ms, attrs);
         turn.spans().add(span);
-        store.append(conversation.id(), span);
+        store.append(turn.id(), span);
         listener.on(span);
     }
 

@@ -29,7 +29,7 @@ public class CrashAfter implements RunListener {
     public void on(Span span) {
         print.on(span);
         if (++written == rows) {
-            System.out.println("crash: exit " + EXIT_CODE + " right after row " + span.step() + " of run " + span.run()
+            System.out.println("crash: exit " + EXIT_CODE + " right after row " + span.span() + " of turn " + span.turnId()
                     + " was persisted (simulated) · handler calls: " + ToolLoader.handlerCalls());
             exit.run();
         }

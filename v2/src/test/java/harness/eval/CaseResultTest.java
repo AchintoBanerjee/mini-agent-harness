@@ -45,7 +45,7 @@ class CaseResultTest {
 
     @Test
     void aCutShortRowFailsStoppedByDone() {
-        Span cut = new Span("r-test", 5, 1, 2, Span.Kind.NOTE, "cut short at maxPasses=2", "", Span.Status.CUT_SHORT, 0, Map.of());
+        Span cut = new Span("r-test", 5, 2, Span.Kind.NOTE, "cut short at maxPasses=2", "", Span.Status.CUT_SHORT, 0, Map.of());
         CaseResult result = CaseResult.score(ORDER, List.of(llm(1, "order_status"), tool(2, "order_status", Span.Status.OK), cut), ANSWER, 0);
 
         assertFalse(result.stoppedByDone());
@@ -78,10 +78,10 @@ class CaseResultTest {
 
     private static Span llm(int step, String tools) {
         Map<String, String> attrs = tools == null ? Map.of("question", "q") : Map.of("question", "q", "tool", tools);
-        return new Span("r-test", step, 1, (step + 1) / 2, Span.Kind.LLM, "pass", tools == null ? "Done[]" : "ToolCall", Span.Status.OK, 0, attrs);
+        return new Span("r-test", step, (step + 1) / 2, Span.Kind.LLM, "pass", tools == null ? "Done[]" : "ToolCall", Span.Status.OK, 0, attrs);
     }
 
     private static Span tool(int step, String name, Span.Status status) {
-        return new Span("r-test", step, 1, 1, Span.Kind.TOOL, name + " {}", "out", status, 1, Map.of("tool", name));
+        return new Span("r-test", step, 1, Span.Kind.TOOL, name + " {}", "out", status, 1, Map.of("tool", name));
     }
 }

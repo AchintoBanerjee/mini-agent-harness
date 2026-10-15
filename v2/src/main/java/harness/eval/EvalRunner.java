@@ -47,7 +47,7 @@ public class EvalRunner {
         long started = System.nanoTime();
         String answer = orchestrator.run(golden.question());
         long ms = Span.millisSince(started);
-        return CaseResult.score(golden, store.load(orchestrator.conversation().id()), answer, ms);
+        return CaseResult.score(golden, store.load(orchestrator.conversation().turns().getFirst().id()), answer, ms);
     }
 
     /** The case's agent as shipped, with the case's pass budget as its cap when the case sets one. */

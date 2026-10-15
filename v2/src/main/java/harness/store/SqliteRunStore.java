@@ -17,26 +17,33 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * One SQLite file, two tables: job (one row per run: who asked what, whether the loop is
- * QUEUED, RUNNING, DONE, FAILED or DEAD, which worker claimed it and how many times) and
- * step (one row per recorded step, attrs as a JSON text). RunQueue adds its queue table to
- * the same file. The CLI, the HTTP server and the worker all open harness.db; tests open
- * a temp file. One connection, every call synchronized: a worker's thread writes while
- * the SSE threads read.
+ * One SQLite file, three tables: conversation (who talks to which agent), turn (one row per
+ * turn, its id the job id: the question, the answer, whether the loop is QUEUED, RUNNING,
+ * DONE or FAILED, which worker claimed it and how many times) and span (one row per
+ * recorded step, attrs as a JSON text). RunQueue adds its queue table to the same file.
+ * The CLI, the HTTP server and the worker all open harness.db; tests open a temp file. One
+ * connection, every call synchronized: a worker's thread writes while the SSE threads read.
  */
 public class SqliteRunStore implements RunStore, AutoCloseable {
 
     public static final Path DEFAULT_FILE = Path.of("harness.db");
 
-    static final String CREATE_JOB = """
-            CREATE TABLE IF NOT EXISTS job (
-              id TEXT PRIMARY KEY, conversation_id TEXT, agent TEXT, question TEXT,
-              status TEXT, claimed_by TEXT, attempts INTEGER DEFAULT 0, created_at INTEGER, updated_at INTEGER)""";
-    static final String CREATE_STEP = """
-            CREATE TABLE IF NOT EXISTS step (
-              job_id TEXT, step INTEGER, turn INTEGER, pass INTEGER, kind TEXT, request TEXT,
-              response TEXT, status TEXT, ms INTEGER, attrs TEXT, PRIMARY KEY (job_id, step))""";
-    static final String JOB_COLUMNS = "id, conversation_id, agent, question, status, claimed_by, attempts, created_at, updated_at";
+    static final String CREATE_CONVERSATION = """
+            CREATE TABLE IF NOT EXISTS conversation (
+              id TEXT PRIMARY KEY, agent TEXT, created_at INTEGER)""";
+    static final String CREATE_TURN = """
+            CREATE TABLE IF NOT EXISTS turn (
+              id TEXT PRIMARY KEY, conversation_id TEXT, question TEXT, answer TEXT, status TEXT,
+              claimed_by TEXT, attempts INTEGER DEFAULT 0, created_at INTEGER, updated_at INTEGER)""";
+    static final String CREATE_SPAN = """
+            CREATE TABLE IF NOT EXISTS span (
+              turn_id TEXT, span INTEGER, pass INTEGER, kind TEXT, request TEXT, response TEXT,
+              status TEXT, ms INTEGER, attrs TEXT, PRIMARY KEY (turn_id, span))""";
+    /** The turn row with its conversation's agent joined in. */
+    static final String SELECT_TURN = """
+            SELECT t.id, t.conversation_id, c.agent, t.question, t.answer, t.status, t.claimed_by, t.attempts,
+                   t.created_at, t.updated_at
+            FROM turn t JOIN conversation c ON c.id = t.conversation_id""";
 
     private static final ObjectMapper JSON = new ObjectMapper();
     private static final TypeReference<LinkedHashMap<String, String>> ATTRS = new TypeReference<>() { };
@@ -44,7 +51,7 @@ public class SqliteRunStore implements RunStore, AutoCloseable {
     private final Path file;
     private final Connection db;
 
-    /** Opens (or creates) the file and its two tables; a file from before the worker gets the two worker columns added. */
+    /** Opens (or creates) the file and its tables. A file from before the rename (job, step) is refused. */
     public SqliteRunStore(Path file) {
         this.file = file;
         try {
@@ -52,12 +59,12 @@ public class SqliteRunStore implements RunStore, AutoCloseable {
             try (Statement statement = db.createStatement()) {
                 statement.execute("PRAGMA journal_mode=WAL");
                 statement.execute("PRAGMA busy_timeout=5000");
-                statement.execute(CREATE_JOB);
-                statement.execute(CREATE_STEP);
-                if (!hasColumn(statement, "job", "claimed_by")) {
-                    statement.execute("ALTER TABLE job ADD COLUMN claimed_by TEXT");
-                    statement.execute("ALTER TABLE job ADD COLUMN attempts INTEGER DEFAULT 0");
+                if (hasTable(statement, "job")) {
+                    throw new IllegalStateException(file + " is from before the conversation, turn and span tables: delete it and start again");
                 }
+                statement.execute(CREATE_CONVERSATION);
+                statement.execute(CREATE_TURN);
+                statement.execute(CREATE_SPAN);
             }
         } catch (SQLException e) {
             throw new IllegalStateException("cannot open " + file, e);
@@ -74,69 +81,86 @@ public class SqliteRunStore implements RunStore, AutoCloseable {
     }
 
     @Override
-    public synchronized String newRun(String agent, String question) {
-        String runId = RunStore.newId();
-        while (exists(runId)) {
-            runId = RunStore.newId();
+    public synchronized String newConversation(String agent) {
+        String id = RunStore.newId("c");
+        while (conversationExists(id)) {
+            id = RunStore.newId("c");
         }
-        long now = System.currentTimeMillis();
-        try (PreparedStatement insert = db.prepareStatement(
-                "INSERT INTO job (" + JOB_COLUMNS + ") VALUES (?, ?, ?, ?, ?, NULL, 0, ?, ?)")) {
-            insert.setString(1, runId);
-            insert.setString(2, runId);
-            insert.setString(3, agent);
-            insert.setString(4, question);
-            insert.setString(5, Job.Status.QUEUED.name());
-            insert.setLong(6, now);
-            insert.setLong(7, now);
+        try (PreparedStatement insert = db.prepareStatement("INSERT INTO conversation (id, agent, created_at) VALUES (?, ?, ?)")) {
+            insert.setString(1, id);
+            insert.setString(2, agent);
+            insert.setLong(3, System.currentTimeMillis());
             insert.executeUpdate();
         } catch (SQLException e) {
-            throw new IllegalStateException("cannot open run " + runId + " in " + file, e);
+            throw new IllegalStateException("cannot open conversation " + id + " in " + file, e);
         }
-        return runId;
+        return id;
     }
 
     @Override
-    public synchronized void append(String runId, Span span) {
-        requireRun(runId);
+    public synchronized String newTurn(String conversationId, String question) {
+        conversation(conversationId);
+        String turnId = RunStore.newId("r");
+        while (exists(turnId)) {
+            turnId = RunStore.newId("r");
+        }
+        long now = System.currentTimeMillis();
         try (PreparedStatement insert = db.prepareStatement(
-                "INSERT INTO step (job_id, step, turn, pass, kind, request, response, status, ms, attrs) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")) {
-            insert.setString(1, runId);
-            insert.setInt(2, span.step());
-            insert.setInt(3, span.turn());
-            insert.setInt(4, span.pass());
-            insert.setString(5, span.kind().name());
-            insert.setString(6, span.request());
-            insert.setString(7, span.response());
-            insert.setString(8, span.status().name());
-            insert.setLong(9, span.ms());
-            insert.setString(10, JSON.writeValueAsString(span.attrs()));
+                "INSERT INTO turn (id, conversation_id, question, answer, status, claimed_by, attempts, created_at, updated_at)"
+                        + " VALUES (?, ?, ?, NULL, ?, NULL, 0, ?, ?)")) {
+            insert.setString(1, turnId);
+            insert.setString(2, conversationId);
+            insert.setString(3, question);
+            insert.setString(4, TurnRow.Status.QUEUED.name());
+            insert.setLong(5, now);
+            insert.setLong(6, now);
             insert.executeUpdate();
         } catch (SQLException e) {
-            throw new IllegalStateException("cannot write step " + span.step() + " of " + runId + " to " + file, e);
+            throw new IllegalStateException("cannot open turn " + turnId + " in " + file, e);
+        }
+        return turnId;
+    }
+
+    @Override
+    public synchronized void append(String turnId, Span span) {
+        requireTurn(turnId);
+        try (PreparedStatement insert = db.prepareStatement(
+                "INSERT INTO span (turn_id, span, pass, kind, request, response, status, ms, attrs) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)")) {
+            insert.setString(1, turnId);
+            insert.setInt(2, span.span());
+            insert.setInt(3, span.pass());
+            insert.setString(4, span.kind().name());
+            insert.setString(5, span.request());
+            insert.setString(6, span.response());
+            insert.setString(7, span.status().name());
+            insert.setLong(8, span.ms());
+            insert.setString(9, JSON.writeValueAsString(span.attrs()));
+            insert.executeUpdate();
+        } catch (SQLException e) {
+            throw new IllegalStateException("cannot write span " + span.span() + " of " + turnId + " to " + file, e);
         } catch (com.fasterxml.jackson.core.JsonProcessingException e) {
             throw new UncheckedIOException(e);
         }
     }
 
     @Override
-    public synchronized List<Span> load(String runId) {
-        requireRun(runId);
+    public synchronized List<Span> load(String turnId) {
+        requireTurn(turnId);
         List<Span> rows = new ArrayList<>();
         try (PreparedStatement select = db.prepareStatement(
-                "SELECT step, turn, pass, kind, request, response, status, ms, attrs FROM step WHERE job_id = ? ORDER BY step")) {
-            select.setString(1, runId);
+                "SELECT span, pass, kind, request, response, status, ms, attrs FROM span WHERE turn_id = ? ORDER BY span")) {
+            select.setString(1, turnId);
             try (ResultSet result = select.executeQuery()) {
                 while (result.next()) {
                     Map<String, String> attrs = JSON.readValue(result.getString("attrs"), ATTRS);
-                    rows.add(new Span(runId, result.getInt("step"), result.getInt("turn"), result.getInt("pass"),
+                    rows.add(new Span(turnId, result.getInt("span"), result.getInt("pass"),
                             Span.Kind.valueOf(result.getString("kind")), result.getString("request"),
                             result.getString("response"), Span.Status.valueOf(result.getString("status")),
                             result.getLong("ms"), attrs));
                 }
             }
         } catch (SQLException e) {
-            throw new IllegalStateException("cannot read run " + runId + " from " + file, e);
+            throw new IllegalStateException("cannot read turn " + turnId + " from " + file, e);
         } catch (com.fasterxml.jackson.core.JsonProcessingException e) {
             throw new UncheckedIOException(e);
         }
@@ -144,9 +168,9 @@ public class SqliteRunStore implements RunStore, AutoCloseable {
     }
 
     @Override
-    public synchronized boolean exists(String runId) {
-        try (PreparedStatement select = db.prepareStatement("SELECT 1 FROM job WHERE id = ?")) {
-            select.setString(1, runId);
+    public synchronized boolean exists(String turnId) {
+        try (PreparedStatement select = db.prepareStatement("SELECT 1 FROM turn WHERE id = ?")) {
+            select.setString(1, turnId);
             try (ResultSet result = select.executeQuery()) {
                 return result.next();
             }
@@ -156,66 +180,94 @@ public class SqliteRunStore implements RunStore, AutoCloseable {
     }
 
     @Override
-    public synchronized Job job(String runId) {
-        try (PreparedStatement select = db.prepareStatement("SELECT " + JOB_COLUMNS + " FROM job WHERE id = ?")) {
-            select.setString(1, runId);
+    public synchronized TurnRow turn(String turnId) {
+        try (PreparedStatement select = db.prepareStatement(SELECT_TURN + " WHERE t.id = ?")) {
+            select.setString(1, turnId);
             try (ResultSet result = select.executeQuery()) {
                 if (!result.next()) {
-                    throw new IllegalArgumentException("no run " + runId + " in " + file);
+                    throw new IllegalArgumentException("no turn " + turnId + " in " + file);
                 }
-                return job(result);
+                return turn(result);
             }
         } catch (SQLException e) {
-            throw new IllegalStateException("cannot read run " + runId + " from " + file, e);
+            throw new IllegalStateException("cannot read turn " + turnId + " from " + file, e);
         }
     }
 
     @Override
-    public synchronized void setStatus(String runId, Job.Status status) {
-        requireRun(runId);
-        try (PreparedStatement update = db.prepareStatement("UPDATE job SET status = ?, updated_at = ? WHERE id = ?")) {
+    public synchronized ConversationRow conversation(String conversationId) {
+        try (PreparedStatement select = db.prepareStatement("SELECT id, agent, created_at FROM conversation WHERE id = ?")) {
+            select.setString(1, conversationId);
+            try (ResultSet result = select.executeQuery()) {
+                if (!result.next()) {
+                    throw new IllegalArgumentException("no conversation " + conversationId + " in " + file);
+                }
+                return new ConversationRow(result.getString("id"), result.getString("agent"), result.getLong("created_at"));
+            }
+        } catch (SQLException e) {
+            throw new IllegalStateException("cannot read conversation " + conversationId + " from " + file, e);
+        }
+    }
+
+    @Override
+    public synchronized List<TurnRow> turns(String conversationId) {
+        List<TurnRow> turns = new ArrayList<>();
+        try (PreparedStatement select = db.prepareStatement(SELECT_TURN + " WHERE t.conversation_id = ? ORDER BY t.rowid")) {
+            select.setString(1, conversationId);
+            try (ResultSet result = select.executeQuery()) {
+                while (result.next()) {
+                    turns.add(turn(result));
+                }
+            }
+        } catch (SQLException e) {
+            throw new IllegalStateException("cannot read conversation " + conversationId + " from " + file, e);
+        }
+        return turns;
+    }
+
+    @Override
+    public synchronized void setStatus(String turnId, TurnRow.Status status) {
+        requireTurn(turnId);
+        try (PreparedStatement update = db.prepareStatement("UPDATE turn SET status = ?, updated_at = ? WHERE id = ?")) {
             update.setString(1, status.name());
             update.setLong(2, System.currentTimeMillis());
-            update.setString(3, runId);
+            update.setString(3, turnId);
             update.executeUpdate();
         } catch (SQLException e) {
-            throw new IllegalStateException("cannot update run " + runId + " in " + file, e);
+            throw new IllegalStateException("cannot update turn " + turnId + " in " + file, e);
         }
     }
 
     @Override
-    public synchronized int claim(String runId, String claimedBy) {
-        requireRun(runId);
+    public synchronized void done(String turnId, String answer) {
+        requireTurn(turnId);
+        try (PreparedStatement update = db.prepareStatement("UPDATE turn SET status = ?, answer = ?, updated_at = ? WHERE id = ?")) {
+            update.setString(1, TurnRow.Status.DONE.name());
+            update.setString(2, answer);
+            update.setLong(3, System.currentTimeMillis());
+            update.setString(4, turnId);
+            update.executeUpdate();
+        } catch (SQLException e) {
+            throw new IllegalStateException("cannot finish turn " + turnId + " in " + file, e);
+        }
+    }
+
+    @Override
+    public synchronized int claim(String turnId, String claimedBy) {
+        requireTurn(turnId);
         try (PreparedStatement update = db.prepareStatement(
-                "UPDATE job SET status = ?, claimed_by = ?, attempts = attempts + 1, updated_at = ? WHERE id = ? RETURNING attempts")) {
-            update.setString(1, Job.Status.RUNNING.name());
+                "UPDATE turn SET status = ?, claimed_by = ?, attempts = attempts + 1, updated_at = ? WHERE id = ? RETURNING attempts")) {
+            update.setString(1, TurnRow.Status.RUNNING.name());
             update.setString(2, claimedBy);
             update.setLong(3, System.currentTimeMillis());
-            update.setString(4, runId);
+            update.setString(4, turnId);
             try (ResultSet result = update.executeQuery()) {
                 result.next();
                 return result.getInt("attempts");
             }
         } catch (SQLException e) {
-            throw new IllegalStateException("cannot claim run " + runId + " in " + file, e);
+            throw new IllegalStateException("cannot claim turn " + turnId + " in " + file, e);
         }
-    }
-
-    @Override
-    public synchronized List<Job> withStatus(Job.Status status) {
-        List<Job> jobs = new ArrayList<>();
-        try (PreparedStatement select = db.prepareStatement(
-                "SELECT " + JOB_COLUMNS + " FROM job WHERE status = ? ORDER BY created_at, id")) {
-            select.setString(1, status.name());
-            try (ResultSet result = select.executeQuery()) {
-                while (result.next()) {
-                    jobs.add(job(result));
-                }
-            }
-        } catch (SQLException e) {
-            throw new IllegalStateException("cannot read " + file, e);
-        }
-        return jobs;
     }
 
     @Override
@@ -227,27 +279,34 @@ public class SqliteRunStore implements RunStore, AutoCloseable {
         }
     }
 
-    private static Job job(ResultSet result) throws SQLException {
-        return new Job(result.getString("id"), result.getString("conversation_id"), result.getString("agent"),
-                result.getString("question"), Job.Status.valueOf(result.getString("status")),
+    private boolean conversationExists(String id) {
+        try (PreparedStatement select = db.prepareStatement("SELECT 1 FROM conversation WHERE id = ?")) {
+            select.setString(1, id);
+            try (ResultSet result = select.executeQuery()) {
+                return result.next();
+            }
+        } catch (SQLException e) {
+            throw new IllegalStateException("cannot read " + file, e);
+        }
+    }
+
+    private static TurnRow turn(ResultSet result) throws SQLException {
+        return new TurnRow(result.getString("id"), result.getString("conversation_id"), result.getString("agent"),
+                result.getString("question"), result.getString("answer"), TurnRow.Status.valueOf(result.getString("status")),
                 result.getString("claimed_by"), result.getInt("attempts"),
                 result.getLong("created_at"), result.getLong("updated_at"));
     }
 
-    private static boolean hasColumn(Statement statement, String table, String column) throws SQLException {
-        try (ResultSet result = statement.executeQuery("PRAGMA table_info(" + table + ")")) {
-            while (result.next()) {
-                if (result.getString("name").equals(column)) {
-                    return true;
-                }
-            }
+    private static boolean hasTable(Statement statement, String table) throws SQLException {
+        try (ResultSet result = statement.executeQuery(
+                "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = '" + table + "'")) {
+            return result.next();
         }
-        return false;
     }
 
-    private void requireRun(String runId) {
-        if (!exists(runId)) {
-            throw new IllegalArgumentException("no run " + runId + " in " + file);
+    private void requireTurn(String turnId) {
+        if (!exists(turnId)) {
+            throw new IllegalArgumentException("no turn " + turnId + " in " + file);
         }
     }
 }

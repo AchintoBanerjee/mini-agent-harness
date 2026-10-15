@@ -1,6 +1,8 @@
 package harness.core;
 
 import harness.agent.Agent;
+import harness.store.RunStore;
+import harness.store.TurnRow;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -28,31 +30,29 @@ public class Conversation {
         return turns;
     }
 
-    /** Opens the next turn. It knows this conversation, so its rows can point at earlier ones. */
-    public Turn turn(String question) {
-        Turn turn = new Turn(question, this);
+    /** Opens the next turn under its id (the job id). It knows this conversation, so its rows can point at earlier ones. */
+    public Turn turn(String id, String question) {
+        Turn turn = new Turn(id, question, this);
         turns.add(turn);
         return turn;
     }
 
     /**
-     * The turns of a logged run, rebuilt from its rows: the first row of each turn is the
-     * LLM row that carries the question. Resume continues the last turn; GET /runs reads
-     * its answer.
+     * The conversation as the store holds it, up to and including the given turn: each
+     * earlier turn with its question, its spans and its answer, so the model sees the
+     * history and a repeated call can be found; then the turn itself, with whatever rows a
+     * worker before this one left.
      */
-    public static Conversation rebuild(String id, Agent agent, List<Span> rows) {
-        Conversation conversation = new Conversation(id, agent);
-        Turn turn = null;
-        for (Span row : rows) {
-            if (row.turn() != conversation.turns.size()) {
-                String question = row.attrs().get(Orchestrator.QUESTION);
-                if (question == null) {
-                    throw new IllegalStateException("row " + row.step() + " of " + id + " carries no question: this log predates resume");
-                }
-                turn = conversation.turn(question);
+    public static Conversation load(RunStore store, String conversationId, Agent agent, String upToTurnId) {
+        Conversation conversation = new Conversation(conversationId, agent);
+        for (TurnRow row : store.turns(conversationId)) {
+            Turn turn = conversation.turn(row.id(), row.question());
+            turn.spans().addAll(store.load(row.id()));
+            turn.setAnswer(row.answer());
+            if (row.id().equals(upToTurnId)) {
+                return conversation;
             }
-            turn.spans().add(row);
         }
-        return conversation;
+        throw new IllegalArgumentException("turn " + upToTurnId + " is not in conversation " + conversationId);
     }
 }

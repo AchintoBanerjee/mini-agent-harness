@@ -42,7 +42,7 @@ public class RelaySummarizer implements Summarizer {
         List<Turn> turns = turn.conversation() == null ? List.of(turn) : turn.conversation().turns();
         for (Turn earlier : turns) {
             for (Span row : earlier.spans()) {
-                if (row.step() == ref) {
+                if (row.span() == ref) {
                     return row.response();
                 }
             }

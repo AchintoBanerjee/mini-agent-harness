@@ -10,9 +10,9 @@ import harness.core.RunListener;
 import harness.core.Span;
 import harness.model.LLMProxy;
 import harness.model.RuleBasedLLM;
-import harness.store.Job;
 import harness.store.RunQueue;
 import harness.store.SqliteRunStore;
+import harness.store.TurnRow;
 import harness.tools.ToolCaller;
 import harness.tools.ToolLoader;
 import harness.tools.ToolRegistry;
@@ -22,13 +22,13 @@ import java.util.List;
 import java.util.Optional;
 
 /**
- * Runs the jobs on the queue. One message at a time: receive it (the lease), claim the job
- * row (RUNNING, this worker's name, attempts + 1), run the loop, ack. If the job already
- * has steps, a worker before this one died on it, so the loop resumes from the last saved
- * step instead of starting over. Every step the loop writes extends the lease, so a live
- * worker keeps its job for as long as the turn takes, and a dead one loses it one
- * visibility window after its last step. crashAfter(N) is the simulated death: exit 3
- * right after row N is persisted, no ack, the lease simply runs out.
+ * Runs the turns on the queue. One message at a time: receive it (the lease), claim the
+ * turn row (RUNNING, this worker's name, attempts + 1), run the loop, ack. If the turn
+ * already has rows, a worker before this one died on it, so the loop resumes from the last
+ * saved step instead of starting over. Every row the loop writes extends the lease, so a
+ * live worker keeps its turn for as long as it takes, and a dead one loses it one
+ * visibility window after its last row. crashAfter(N) is the simulated death: exit 3 right
+ * after row N is persisted, no ack, the lease simply runs out.
  */
 public class Worker {
 
@@ -48,7 +48,7 @@ public class Worker {
     private long pollMs = POLL_MS;
     private volatile boolean stopped;
 
-    /** name goes on the job row as claimed_by (the CLI passes the pid); visibilityMs is the lease. */
+    /** name goes on the turn row as claimed_by (the CLI passes the pid); visibilityMs is the lease. */
     public Worker(Path agentsDir, Path toolsDir, SqliteRunStore store, RunQueue queue, String name, long visibilityMs) {
         this.agentsDir = agentsDir;
         this.toolsDir = toolsDir;
@@ -91,60 +91,48 @@ public class Worker {
         stopped = true;
     }
 
-    /**
-     * One receive. False when nothing was visible. True when a message was handled: its
-     * job ran (or resumed) and was acked, or it had been received too often and the queue
-     * dead-lettered it.
-     */
+    /** One receive. False when nothing was visible; true when a turn ran (or resumed) and was acked. */
     public boolean once() {
         Optional<RunQueue.Message> next = queue.receive(visibilityMs);
         if (next.isEmpty()) {
             return false;
         }
-        RunQueue.Message message = next.get();
-        String jobId = message.jobId();
-        if (message.dead()) {
-            Job job = store.job(jobId);
-            System.out.println("dead-lettered " + jobId + ": received " + message.receives() + " times, more than max "
-                    + queue.maxReceives() + " · " + job.status() + " in " + store.file() + " after " + job.attempts() + " attempts");
-            return true;
-        }
-
-        int attempt = store.claim(jobId, name);
-        Job job = store.job(jobId);
-        List<Span> saved = store.load(jobId);
-        if (message.receives() > 1) {
-            System.out.println("received again: attempt " + attempt + ", lease had expired · " + jobId
-                    + (saved.isEmpty() ? " starts over" : " resumes from step " + saved.getLast().step()));
+        String turnId = next.get().turnId();
+        int attempt = store.claim(turnId, name);
+        TurnRow turn = store.turn(turnId);
+        List<Span> saved = store.load(turnId);
+        if (next.get().receives() > 1) {
+            System.out.println("received again: attempt " + attempt + ", lease had expired · " + turnId
+                    + (saved.isEmpty() ? " starts over" : " resumes from step " + saved.getLast().span()));
         } else {
-            System.out.println("received " + jobId + ": attempt " + attempt + " · agent " + job.agent() + " · \"" + job.question() + "\"");
+            System.out.println("received " + turnId + ": attempt " + attempt + " · agent " + turn.agent() + " · \"" + turn.question() + "\"");
         }
 
         long started = System.nanoTime();
         String answer;
         try {
-            answer = saved.isEmpty() ? orchestrator(job, jobId).start(jobId, job.question()) : orchestrator(job, jobId).resume(jobId);
+            answer = saved.isEmpty() ? orchestrator(turn).start(turnId) : orchestrator(turn).resume(turnId);
         } catch (RuntimeException e) {
-            queue.ack(jobId);
-            System.out.println("failed " + jobId + ": " + e + " · " + store.job(jobId).status() + " in " + store.file() + " · acked");
+            queue.ack(turnId);
+            System.out.println("failed " + turnId + ": " + e + " · " + store.turn(turnId).status() + " in " + store.file() + " · acked");
             return true;
         }
-        queue.ack(jobId);
+        queue.ack(turnId);
         System.out.println("answer: " + answer);
-        System.out.printf("done %s · %d steps · %d ms · %s in %s · acked · handler calls: %s%n",
-                jobId, store.load(jobId).size(), Span.millisSince(started), store.job(jobId).status(), store.file(),
+        System.out.printf("done %s · %d spans · %d ms · %s in %s · acked · handler calls: %s%n",
+                turnId, store.load(turnId).size(), Span.millisSince(started), store.turn(turnId).status(), store.file(),
                 ToolLoader.handlerCalls());
         return true;
     }
 
-    /** The loop over this job: the agent from the job row, every written step extends the lease, then prints. */
-    private Orchestrator orchestrator(Job job, String jobId) {
-        Agent agent = agent(job.agent());
+    /** The loop over this turn: the agent from the turn row, every written row extends the lease, then prints. */
+    private Orchestrator orchestrator(TurnRow turn) {
+        Agent agent = agent(turn.agent());
         ToolRegistry registry = ToolLoader.load(toolsDir);
         ToolCaller toolCaller = new ToolCaller(registry, agent.toolNames(), Duration.ofMillis(agent.toolTimeoutMs()));
         RunListener print = crashAfter > 0 ? new CrashAfter(crashAfter, new ConsoleListener(), this::die) : new ConsoleListener();
         RunListener listener = span -> {
-            queue.extend(jobId, visibilityMs);
+            queue.extend(turn.id(), visibilityMs);
             print.on(span);
         };
         return new Orchestrator(agent, registry, llm, toolCaller, new RelaySummarizer(), store, listener);

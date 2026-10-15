@@ -51,7 +51,7 @@ class DedupeTest {
         assertEquals(ANSWER, first);
         assertEquals(first, second);
         assertEquals(1, handlerCalls("order_status"), "one handler call for the two turns");
-        List<Span> rows = store.load(orchestrator.conversation().id());
+        List<Span> rows = rows(orchestrator);
         assertEquals(List.of(Span.Kind.LLM, Span.Kind.TOOL, Span.Kind.LLM, Span.Kind.LLM, Span.Kind.TOOL, Span.Kind.LLM), kinds(rows));
         Span repeat = rows.get(4);
         assertEquals(Span.Status.DEDUPED, repeat.status());
@@ -59,7 +59,7 @@ class DedupeTest {
         assertEquals("2", repeat.attrs().get("ref"));
         assertEquals("order_status", repeat.attrs().get("tool"));
         assertEquals("ORD-1", repeat.attrs().get("orderId"));
-        assertEquals(orchestrator.conversation().id() + "/4", repeat.attrs().get("key"), "still keyed by the LLM row that decided it");
+        assertEquals(orchestrator.conversation().turns().get(1).id() + "/4", repeat.attrs().get("key"), "still keyed by the LLM row that decided it");
         assertEquals(0, repeat.ms());
         assertEquals(Span.Status.OK, rows.get(1).status(), "the original row is untouched");
     }
@@ -89,7 +89,7 @@ class DedupeTest {
         assertEquals("Order ORD-2: PROCESSING", orchestrator.run("status of order ORD-2"));
 
         assertEquals(2, handlerCalls("order_status"));
-        assertEquals(List.of(Span.Status.OK, Span.Status.OK), toolStatuses(store.load(orchestrator.conversation().id())));
+        assertEquals(List.of(Span.Status.OK, Span.Status.OK), toolStatuses(rows(orchestrator)));
     }
 
     @Test
@@ -101,7 +101,7 @@ class DedupeTest {
         String second = orchestrator.run("boom again");
 
         assertEquals("Tool throw_boom ERROR: Tool failed: boom", second);
-        assertEquals(List.of(Span.Status.ERROR, Span.Status.ERROR), toolStatuses(store.load(orchestrator.conversation().id())),
+        assertEquals(List.of(Span.Status.ERROR, Span.Status.ERROR), toolStatuses(rows(orchestrator)),
                 "a failed call is tried again, not repeated");
     }
 
@@ -114,7 +114,7 @@ class DedupeTest {
 
         assertEquals(ANSWER + "\nProduct PRD-1: 42 units in stock", answer, "request order, the repeat resolved in its place");
         assertEquals(Map.of("order_status", 1, "stock_status", 1), ToolLoader.HANDLER_CALLS);
-        List<Span> rows = store.load(orchestrator.conversation().id());
+        List<Span> rows = rows(orchestrator);
         assertEquals(List.of(Span.Kind.LLM, Span.Kind.TOOL, Span.Kind.LLM, Span.Kind.LLM, Span.Kind.TOOL, Span.Kind.TOOL, Span.Kind.LLM),
                 kinds(rows), "one tool ran, so no 'ran N tools together' note");
         assertEquals(Span.Status.DEDUPED, rows.get(4).status());
@@ -126,23 +126,33 @@ class DedupeTest {
     @Test
     void aRunResumedIntoARepeatedCallDoesNotRunItEither() {
         RunListener dieAfterRow4 = span -> {
-            if (span.step() == 4) {
+            if (span.span() == 4) {
                 throw new ResumeTest.Crash();
             }
         };
         Orchestrator first = orchestrator(support, dieAfterRow4);
         first.run(QUESTION);
         assertThrows(ResumeTest.Crash.class, () -> first.run(QUESTION + " again"));
-        String runId = first.conversation().id();
+        String secondTurn = first.conversation().turns().getLast().id();
         assertEquals(1, handlerCalls("order_status"));
 
-        assertEquals(ANSWER, orchestrator(support, span -> { }).resume(runId));
+        assertEquals(ANSWER, orchestrator(support, span -> { }).resume(secondTurn));
 
-        List<Span> rows = store.load(runId);
-        assertEquals(List.of(Span.Kind.LLM, Span.Kind.TOOL, Span.Kind.LLM, Span.Kind.LLM, Span.Kind.NOTE, Span.Kind.TOOL, Span.Kind.LLM), kinds(rows));
-        assertEquals(Span.Status.DEDUPED, rows.get(5).status());
-        assertEquals("2", rows.get(5).attrs().get("ref"));
-        assertEquals(1, handlerCalls("order_status"), "the log remembers the earlier OK row: nothing ran again");
+        List<Span> rows = store.load(secondTurn);
+        assertEquals(List.of(Span.Kind.LLM, Span.Kind.NOTE, Span.Kind.TOOL, Span.Kind.LLM), kinds(rows), "the second turn's own rows");
+        assertEquals(List.of(4, 5, 6, 7), rows.stream().map(Span::span).toList(), "numbered on from the first turn");
+        assertEquals(Span.Status.DEDUPED, rows.get(2).status());
+        assertEquals("2", rows.get(2).attrs().get("ref"), "pointing at the first turn's row");
+        assertEquals(1, handlerCalls("order_status"), "the store remembers the earlier OK row: nothing ran again");
+    }
+
+    /** The rows of every turn of the conversation, in order, as the store holds them. */
+    private List<Span> rows(Orchestrator orchestrator) {
+        List<Span> rows = new ArrayList<>();
+        for (Turn turn : orchestrator.conversation().turns()) {
+            rows.addAll(store.load(turn.id()));
+        }
+        return rows;
     }
 
     private Orchestrator orchestrator(Agent agent, RunListener listener) {

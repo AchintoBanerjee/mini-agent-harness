@@ -3,13 +3,14 @@ package harness.core;
 import java.util.Map;
 
 /**
- * One recorded step of a run: a model call, a tool call, or a note from the loop itself.
- * These fields are fixed for good; later steps add keys to attrs, never new fields.
+ * One recorded step of a turn: a model call, a tool call, or a note from the loop itself.
+ * turnId is the turn (job id) the row belongs to; span is its number, counting up through
+ * the conversation so a later turn can point at an earlier turn's row. Later steps add keys
+ * to attrs, never new fields.
  */
 public record Span(
-        String run,
-        int step,
-        int turn,
+        String turnId,
+        int span,
         int pass,
         Kind kind,
         String request,
@@ -22,9 +23,9 @@ public record Span(
 
     public enum Status { OK, ERROR, TIMEOUT, DENIED, DEDUPED, CUT_SHORT }
 
-    /** Short form for tests and hand-built contexts: no run, no position, no timing, status OK. */
+    /** Short form for tests and hand-built contexts: no turn, no number, no timing, status OK. */
     public Span(Kind kind, String request, String response) {
-        this("", 0, 0, 0, kind, request, response, Status.OK, 0, Map.of());
+        this("", 0, 0, kind, request, response, Status.OK, 0, Map.of());
     }
 
     /** The ms a row carries: whole milliseconds since a System.nanoTime() reading. */

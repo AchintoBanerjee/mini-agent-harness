@@ -14,10 +14,10 @@ A turn (job id) becomes a message on a queue, a worker runs it, and when the wor
 
 ![durability](durability.svg)
 
-- **End users → API layer**: the question comes in; the API writes the job row (`QUEUED`) and a message on the queue in one transaction, and returns the job id at once. No loop runs in this process.
+- **End users → API layer**: the question comes in; the API writes the turn row (`QUEUED`) and a message on the queue in one transaction, and returns the turn's id, the job id, at once. No loop runs in this process.
 - **Run queue**: the message is the turn. `receive` hides it for the visibility window, and that window is the lease: whoever holds it is the only worker on the turn.
-- **Workers**: a worker receives, claims the job row (`RUNNING`, its process id, attempts + 1) and runs the loop; each step is written to the store before the next one, and each written step extends the lease.
-- **Ack**: only after the last step is saved and the job row says `DONE` does the worker delete the message.
+- **Workers**: a worker receives, claims the turn row (`RUNNING`, its process id, attempts + 1) and runs the loop; each step is written to the store before the next one, and each written step extends the lease.
+- **Ack**: only after the last step is saved and the turn row says `DONE` with the answer does the worker delete the message.
 - **Dead worker**: no ack, the lease runs out, the message is visible again; the next worker receives it, finds the saved steps, and resumes from the last one, so the model is asked only for what comes next.
 - **DLQ** (dead-letter queue): after N receives the message goes to a dead-letter queue instead of looping forever. Out of scope for the POC.
 - **Steps back to the client**: the API reads the steps from the store and streams them as Server-Sent Events (SSE), so it does not care which worker wrote them.
@@ -25,13 +25,12 @@ A turn (job id) becomes a message on a queue, a worker runs it, and when the wor
 
 | table | columns | what it is for |
 | --- | --- | --- |
-| `job` | `id` · `conversation_id` · `agent` · `question` · `status` (QUEUED · RUNNING · DONE · FAILED) · `claimed_by` · `attempts` · `created_at` · `updated_at` | one row per turn (job id): where it is, who has it, how many workers tried |
-| `step` | `job_id` · `step` · `turn` · `pass` · `kind` · `request` · `response` · `status` · `ms` · `attrs` (JSON) · key (`job_id`, `step`) | one row per saved step: what resume and the stream read |
-| `queue` | `job_id` · `visible_at` · `receives` | the message: hidden until `visible_at`, counted on every receive |
+| `conversation` | `id` · `agent` · `created_at` | one row per conversation: who talks to which agent |
+| `turn` | `id` (the job id) · `conversation_id` · `question` · `answer` · `status` (QUEUED · RUNNING · DONE · FAILED) · `claimed_by` · `attempts` · `created_at` · `updated_at` | one row per turn: where it is, who has it, how many workers tried, the answer |
+| `span` | `turn_id` · `span` · `pass` · `kind` · `request` · `response` · `status` · `ms` · `attrs` (JSON) · key (`turn_id`, `span`) | one row per saved step: what resume and the stream read |
+| `queue` | `turn_id` · `visible_at` · `receives` | the message: hidden until `visible_at`, counted on every receive |
 
 Out of scope for the POC, in the design only: the dead-letter queue, a sweeper for jobs that never finish, more than one worker process at a time on one file.
-
-The diagram's names for the same rows, conversation → turn (job id) → span, are the whiteboard's; in the code today the tables are `job` and `step`.
 
 ## The guarantee
 
@@ -77,19 +76,16 @@ The queue is one table in the same SQLite file as the runs, and `RunQueue` is th
 <details><summary>the three SQL statements of the queue: receive, extend, ack</summary>
 
 ```java
-public Optional<Message> receive(long visibilityMs) {
-    return Optional.ofNullable(lease(visibilityMs));                       // the oldest visible message, now hidden
-}
-private Message lease(long visibilityMs) {                               // the one UPDATE: hide and count
+public Optional<Message> receive(long visibilityMs) {                    // the oldest visible message, now hidden and counted
     """UPDATE queue SET visible_at = ?, receives = receives + 1
-       WHERE job_id = (SELECT job_id FROM queue WHERE visible_at <= ? ORDER BY rowid LIMIT 1)
-       RETURNING job_id, receives"""                                     // ? = now + visibilityMs, now
+       WHERE turn_id = (SELECT turn_id FROM queue WHERE visible_at <= ? ORDER BY rowid LIMIT 1)
+       RETURNING turn_id, receives"""                                   // ? = now + visibilityMs, now
 }
-public void extend(String jobId, long visibilityMs) {                     // the worker is alive and still on it
-    "UPDATE queue SET visible_at = ? WHERE job_id = ?"                    // ? = now + visibilityMs
+public void extend(String turnId, long visibilityMs) {                    // the worker is alive and still on it
+    "UPDATE queue SET visible_at = ? WHERE turn_id = ?"                   // ? = now + visibilityMs
 }
-public void ack(String jobId) {                                           // the job is done
-    "DELETE FROM queue WHERE job_id = ?"
+public void ack(String turnId) {                                          // the turn is done
+    "DELETE FROM queue WHERE turn_id = ?"
 }
 ```
 
@@ -103,17 +99,16 @@ The worker is the loop around those calls: receive, claim, run or resume, ack la
 ```java
 Optional<RunQueue.Message> next = queue.receive(visibilityMs);
 if (next.isEmpty()) { return false; }                                     // loop() waits 500 ms and asks again
-RunQueue.Message message = next.get();
-String jobId = message.jobId();
-if (message.dead()) { System.out.println("dead-lettered " + jobId + ...); return true; }
-int attempt = store.claim(jobId, name);                                    // RUNNING, claimed_by, attempts + 1
-List<Span> saved = store.load(jobId);
-// inside orchestrator(job, jobId): a listener that runs after every written row:
-//   span -> { queue.extend(jobId, visibilityMs); print.on(span); }
+String turnId = next.get().turnId();
+int attempt = store.claim(turnId, name);                                   // RUNNING, claimed_by, attempts + 1
+TurnRow turn = store.turn(turnId);
+List<Span> saved = store.load(turnId);
+// inside orchestrator(turn): a listener that runs after every written row:
+//   span -> { queue.extend(turn.id(), visibilityMs); print.on(span); }
 String answer = saved.isEmpty()
-        ? orchestrator(job, jobId).start(jobId, job.question())           // a fresh turn
-        : orchestrator(job, jobId).resume(jobId);                         // a dead worker's turn, from its last row
-queue.ack(jobId);                                                          // the last thing
+        ? orchestrator(turn).start(turnId)                                 // a fresh turn
+        : orchestrator(turn).resume(turnId);                               // a dead worker's turn, from its last row
+queue.ack(turnId);                                                         // the last thing
 ```
 
 The store says whether a worker died on this job (it has steps), so resuming is the normal path, not a special one. The listener runs after each row is in the store, so the lease moves with the saved work; the ack comes last.
@@ -121,60 +116,61 @@ The store says whether a worker died on this job (it has steps), so resuming is 
 
 ## Proof
 
-The demo, the bare minimum: submit, a worker that dies after its second row, two seconds for the lease to run out, the next worker resuming from that row, the job DONE over HTTP.
+The demo, the bare minimum: submit, a worker that dies after its second row, two seconds for the lease to run out, the next worker resuming from that row, the turn DONE over HTTP.
 
 <details><summary>proof: the crash, the expired lease, the resume</summary>
 
 ```
-(no worker is running now. submit writes the job row QUEUED and its queue message, and comes back with the id:)
+(submit writes the turn row QUEUED and its queue message without HTTP, and comes back with the id:)
 $ java --enable-native-access=ALL-UNNAMED -cp "target/classes:target/lib/*" harness.cli.Main submit --agent support "What is the status of order ORD-1?"
-submitted r-9441 · QUEUED in harness.db · agent support · "What is the status of order ORD-1?"
-$ curl -s http://localhost:50352/runs/r-9441
+submitted r-5a9e · QUEUED in harness.db · agent support · "What is the status of order ORD-1?"
+$ curl -s http://localhost:58833/turns/r-5a9e
 {
-  "id" : "r-9441",
-  "conversationId" : "r-9441",
+  "id" : "r-5a9e",
+  "conversationId" : "c-28f7",
   "agent" : "support",
   "question" : "What is the status of order ORD-1?",
+  "answer" : null,
   "status" : "QUEUED",
   "claimedBy" : null,
   "attempts" : 0,
-  "createdAt" : 1792031797031,
-  "updatedAt" : 1792031797031,
-  "steps" : [ ]
+  "createdAt" : 1792034463944,
+  "updatedAt" : 1792034463944,
+  "spans" : [ ]
 }
 (a worker takes it with a 2000 ms lease and dies right after its 2nd row is persisted: exit 3, no ack)
 $ java --enable-native-access=ALL-UNNAMED -cp "target/classes:target/lib/*" harness.cli.Main worker --once --crash-after 2 --visibility-ms 2000
-worker pid 27732 · lease 2000 ms · max receives 3 · once · harness.db
-received r-9441: attempt 1 · agent support · "What is the status of order ORD-1?"
+worker pid 31638 · lease 2000 ms · once · harness.db
+received r-5a9e: attempt 1 · agent support · "What is the status of order ORD-1?"
   1  LLM   pass 1 -> ToolCall[toolName=order_status, input={orderId=ORD-1}]  [OK 3 ms]
   2  TOOL  order_status {orderId=ORD-1} -> Order ORD-1: SHIPPED, shipment SHP-1  [OK 0 ms]
-crash: exit 3 right after row 2 of run r-9441 was persisted (simulated) · handler calls: order_status=1
-(process exited with code 3; the job row says RUNNING, the message is still queued but hidden until the lease runs out)
+crash: exit 3 right after row 2 of turn r-5a9e was persisted (simulated) · handler calls: order_status=1
+(process exited with code 3; the turn row says RUNNING, the message is still queued but hidden until the lease runs out)
 $ sleep 2
 (the lease has run out, so the next worker receives the same message again and resumes from the last saved step:)
 $ java --enable-native-access=ALL-UNNAMED -cp "target/classes:target/lib/*" harness.cli.Main worker --once
-worker pid 27734 · lease 2000 ms · max receives 3 · once · harness.db
-received again: attempt 2, lease had expired · r-9441 resumes from step 2
+worker pid 31642 · lease 2000 ms · once · harness.db
+received again: attempt 2, lease had expired · r-5a9e resumes from step 2
   3  NOTE  resumed from step 2  [OK 0 ms]
-  4  LLM   pass 2 -> Done[]  [OK 2 ms]
+  4  LLM   pass 2 -> Done[]  [OK 1 ms]
 answer: Order ORD-1: SHIPPED, shipment SHP-1
-done r-9441 · 4 steps · 29 ms · DONE in harness.db · acked · handler calls: none
-(the API reads the same rows, whoever wrote them: DONE, attempt 2, claimed by the second worker's pid, all four steps)
-$ curl -s http://localhost:50352/runs/r-9441
+done r-5a9e · 4 spans · 27 ms · DONE in harness.db · acked · handler calls: none
+(the API reads the same rows, whoever wrote them: DONE, attempt 2, claimed by the second worker's pid, all four spans)
+$ curl -s http://localhost:58833/turns/r-5a9e
 {
-  "id" : "r-9441",
-  "conversationId" : "r-9441",
+  "id" : "r-5a9e",
+  "conversationId" : "c-28f7",
   "agent" : "support",
   "question" : "What is the status of order ORD-1?",
+  "answer" : "Order ORD-1: SHIPPED, shipment SHP-1",
   "status" : "DONE",
-  "claimedBy" : "27734",
+  "claimedBy" : "31642",
   "attempts" : 2,
-  "createdAt" : 1792031797031,
-  "updatedAt" : 1792031800194,
-  "steps" : [ {
-    "run" : "r-9441",
-    "step" : 1,
-    "turn" : 1,
+  "createdAt" : 1792034463944,
+  "updatedAt" : 1792034467037,
+  "spans" : [ {
+    "turnId" : "r-5a9e",
+    "span" : 1,
     "pass" : 1,
     "kind" : "LLM",
     "request" : "pass 1",
@@ -187,9 +183,8 @@ $ curl -s http://localhost:50352/runs/r-9441
       "orderId" : "ORD-1"
     }
   }, {
-    "run" : "r-9441",
-    "step" : 2,
-    "turn" : 1,
+    "turnId" : "r-5a9e",
+    "span" : 2,
     "pass" : 1,
     "kind" : "TOOL",
     "request" : "order_status {orderId=ORD-1}",
@@ -199,12 +194,11 @@ $ curl -s http://localhost:50352/runs/r-9441
     "attrs" : {
       "tool" : "order_status",
       "orderId" : "ORD-1",
-      "key" : "r-9441/1"
+      "key" : "r-5a9e/1"
     }
   }, {
-    "run" : "r-9441",
-    "step" : 3,
-    "turn" : 1,
+    "turnId" : "r-5a9e",
+    "span" : 3,
     "pass" : 1,
     "kind" : "NOTE",
     "request" : "resumed from step 2",
@@ -213,24 +207,21 @@ $ curl -s http://localhost:50352/runs/r-9441
     "ms" : 0,
     "attrs" : { }
   }, {
-    "run" : "r-9441",
-    "step" : 4,
-    "turn" : 1,
+    "turnId" : "r-5a9e",
+    "span" : 4,
     "pass" : 2,
     "kind" : "LLM",
     "request" : "pass 2",
     "response" : "Done[]",
     "status" : "OK",
-    "ms" : 2,
+    "ms" : 1,
     "attrs" : {
       "question" : "What is the status of order ORD-1?"
     }
-  } ],
-  "answer" : "Order ORD-1: SHIPPED, shipment SHP-1"
+  } ]
 }
-
 ```
 </details>
 
 - The first worker's last line is row 2 and `exit 3`; the second worker's first line is `received again: attempt 2, lease had expired`, its first new row is step 3, `resumed from step 2`, and its footer says `handler calls: none`: the saved tool call did not run again, and the model was asked once more, for pass 2 only.
-- `GET /runs/r-9441` after that: `DONE`, `attempts 2`, `claimedBy` is the second worker's pid, four steps and the answer; the API read the rows and never knew which process wrote which.
+- `GET /turns/r-5a9e` after that: `DONE`, `attempts 2`, `claimedBy` is the second worker's pid, four spans and the answer; the API read the rows and never knew which process wrote which.

@@ -12,35 +12,27 @@ import java.util.Optional;
  * Simple Queue Service). receive hands out the oldest visible message and hides it for the
  * visibility window, in one UPDATE: that is the lease. extend pushes the window forward,
  * ack deletes the message. A worker that dies never acks, so its message becomes visible
- * again when the window runs out, and the next receive gets it. A message received more
- * than maxReceives times is not delivered: its job is set DEAD and the message dropped;
- * GET /dlq lists those jobs. Swap the table for SQS and the three calls stay the same.
+ * again when the window runs out, and the next receive gets it, counted. Swap the table for
+ * SQS and the three calls stay the same. A dead-letter queue after N receives is out of
+ * scope for this POC: receive only leases and counts.
  */
 public class RunQueue {
 
-    public static final int DEFAULT_MAX_RECEIVES = 3;
-
     static final String CREATE_QUEUE = """
             CREATE TABLE IF NOT EXISTS queue (
-              job_id TEXT PRIMARY KEY, visible_at INTEGER, receives INTEGER)""";
+              turn_id TEXT PRIMARY KEY, visible_at INTEGER, receives INTEGER)""";
 
-    /** What receive hands out; dead = received once too often, the job is DEAD and the message gone. */
-    public record Message(String jobId, int receives, boolean dead) {
+    /** What receive hands out: the turn (job id) and how many times it has been received, this one included. */
+    public record Message(String turnId, int receives) {
     }
 
     private final SqliteRunStore store;
     private final Connection db;
-    private final int maxReceives;
 
+    /** Opens the queue table in the store's file. */
     public RunQueue(SqliteRunStore store) {
-        this(store, DEFAULT_MAX_RECEIVES);
-    }
-
-    /** Opens the queue table in the store's file; a message is delivered at most maxReceives times. */
-    public RunQueue(SqliteRunStore store, int maxReceives) {
         this.store = store;
         this.db = store.db();
-        this.maxReceives = maxReceives;
         synchronized (store) {
             try (Statement statement = db.createStatement()) {
                 statement.execute(CREATE_QUEUE);
@@ -50,24 +42,20 @@ public class RunQueue {
         }
     }
 
-    public int maxReceives() {
-        return maxReceives;
-    }
-
-    /** The job row (QUEUED) and its message, in one transaction; the job id comes back at once. */
-    public String submit(String agent, String question) {
+    /** The turn row (QUEUED) in the conversation and its message, in one transaction; the turn id comes back at once. */
+    public String submit(String conversationId, String question) {
         synchronized (store) {
             try {
                 db.setAutoCommit(false);
-                String jobId = store.newRun(agent, question);
+                String turnId = store.newTurn(conversationId, question);
                 try (PreparedStatement insert = db.prepareStatement(
-                        "INSERT INTO queue (job_id, visible_at, receives) VALUES (?, ?, 0)")) {
-                    insert.setString(1, jobId);
+                        "INSERT INTO queue (turn_id, visible_at, receives) VALUES (?, ?, 0)")) {
+                    insert.setString(1, turnId);
                     insert.setLong(2, System.currentTimeMillis());
                     insert.executeUpdate();
                 }
                 db.commit();
-                return jobId;
+                return turnId;
             } catch (SQLException | RuntimeException e) {
                 rollback();
                 throw new IllegalStateException("cannot submit to the queue in " + store.file(), e);
@@ -80,58 +68,49 @@ public class RunQueue {
     /**
      * The lease: the oldest message whose visible_at has passed is hidden until now +
      * visibilityMs and counted, in one UPDATE, so two workers cannot both get it. Empty
-     * when nothing is visible. A message past maxReceives comes back marked dead instead.
+     * when nothing is visible.
      */
     public Optional<Message> receive(long visibilityMs) {
         synchronized (store) {
-            Message message = lease(visibilityMs);
-            if (message != null && message.receives() > maxReceives) {
-                store.setStatus(message.jobId(), Job.Status.DEAD);
-                ack(message.jobId());
-                return Optional.of(new Message(message.jobId(), message.receives(), true));
+            long now = System.currentTimeMillis();
+            try (PreparedStatement lease = db.prepareStatement("""
+                    UPDATE queue SET visible_at = ?, receives = receives + 1
+                    WHERE turn_id = (SELECT turn_id FROM queue WHERE visible_at <= ? ORDER BY rowid LIMIT 1)
+                    RETURNING turn_id, receives""")) {
+                lease.setLong(1, now + visibilityMs);
+                lease.setLong(2, now);
+                try (ResultSet result = lease.executeQuery()) {
+                    return result.next()
+                            ? Optional.of(new Message(result.getString("turn_id"), result.getInt("receives")))
+                            : Optional.empty();
+                }
+            } catch (SQLException e) {
+                throw new IllegalStateException("cannot receive from the queue in " + store.file(), e);
             }
-            return Optional.ofNullable(message);
-        }
-    }
-
-    /** The one UPDATE: hide the oldest visible message until now + visibilityMs and count the receive. */
-    private Message lease(long visibilityMs) {
-        long now = System.currentTimeMillis();
-        try (PreparedStatement lease = db.prepareStatement("""
-                UPDATE queue SET visible_at = ?, receives = receives + 1
-                WHERE job_id = (SELECT job_id FROM queue WHERE visible_at <= ? ORDER BY rowid LIMIT 1)
-                RETURNING job_id, receives""")) {
-            lease.setLong(1, now + visibilityMs);
-            lease.setLong(2, now);
-            try (ResultSet result = lease.executeQuery()) {
-                return result.next() ? new Message(result.getString("job_id"), result.getInt("receives"), false) : null;
-            }
-        } catch (SQLException e) {
-            throw new IllegalStateException("cannot receive from the queue in " + store.file(), e);
         }
     }
 
     /** The worker is alive and still on it: the message stays hidden until now + visibilityMs. */
-    public void extend(String jobId, long visibilityMs) {
+    public void extend(String turnId, long visibilityMs) {
         synchronized (store) {
-            try (PreparedStatement update = db.prepareStatement("UPDATE queue SET visible_at = ? WHERE job_id = ?")) {
+            try (PreparedStatement update = db.prepareStatement("UPDATE queue SET visible_at = ? WHERE turn_id = ?")) {
                 update.setLong(1, System.currentTimeMillis() + visibilityMs);
-                update.setString(2, jobId);
+                update.setString(2, turnId);
                 update.executeUpdate();
             } catch (SQLException e) {
-                throw new IllegalStateException("cannot extend " + jobId + " in " + store.file(), e);
+                throw new IllegalStateException("cannot extend " + turnId + " in " + store.file(), e);
             }
         }
     }
 
-    /** The job is done (or given up): the message is gone for good. */
-    public void ack(String jobId) {
+    /** The turn is done: the message is gone for good. */
+    public void ack(String turnId) {
         synchronized (store) {
-            try (PreparedStatement delete = db.prepareStatement("DELETE FROM queue WHERE job_id = ?")) {
-                delete.setString(1, jobId);
+            try (PreparedStatement delete = db.prepareStatement("DELETE FROM queue WHERE turn_id = ?")) {
+                delete.setString(1, turnId);
                 delete.executeUpdate();
             } catch (SQLException e) {
-                throw new IllegalStateException("cannot ack " + jobId + " in " + store.file(), e);
+                throw new IllegalStateException("cannot ack " + turnId + " in " + store.file(), e);
             }
         }
     }

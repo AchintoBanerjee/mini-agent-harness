@@ -113,7 +113,7 @@ class OrchestratorTest {
         List<Span> rows = orchestrator.conversation().turns().get(0).spans();
         assertEquals(List.of(Span.Kind.LLM, Span.Kind.TOOL, Span.Kind.LLM, Span.Kind.TOOL, Span.Kind.NOTE),
                 rows.stream().map(Span::kind).toList());
-        assertEquals(List.of(1, 2, 3, 4, 5), rows.stream().map(Span::step).toList());
+        assertEquals(List.of(1, 2, 3, 4, 5), rows.stream().map(Span::span).toList());
         Span note = rows.getLast();
         assertEquals(Span.Status.CUT_SHORT, note.status());
         assertEquals("cut short at maxPasses=2", note.request());

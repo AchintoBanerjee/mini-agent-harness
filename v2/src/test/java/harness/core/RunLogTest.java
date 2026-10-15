@@ -34,14 +34,17 @@ class RunLogTest {
         orchestrator.run("What is the status of order ORD-1?");
         orchestrator.run("Is product PRD-1 available?");
 
-        String runId = orchestrator.conversation().id();
-        List<Span> rows = store.load(runId);
-        assertTrue(runId.matches("r-[0-9a-f]{4}"), runId);
-        assertEquals(List.of(1, 2, 3, 4, 5, 6), rows.stream().map(Span::step).toList());
-        assertEquals(List.of(1, 1, 1, 2, 2, 2), rows.stream().map(Span::turn).toList());
+        List<Turn> turns = orchestrator.conversation().turns();
+        assertEquals(2, turns.size(), "one turn per question, in one conversation");
+        assertTrue(orchestrator.conversation().id().matches("c-[0-9a-f]{4}"), orchestrator.conversation().id());
+        List<Span> rows = new ArrayList<>(store.load(turns.get(0).id()));
+        rows.addAll(store.load(turns.get(1).id()));
+        assertTrue(turns.get(0).id().matches("r-[0-9a-f]{4}"), turns.get(0).id());
+        assertEquals(List.of(1, 2, 3, 4, 5, 6), rows.stream().map(Span::span).toList(), "the span numbers run on through the conversation");
         assertEquals(List.of(Span.Kind.LLM, Span.Kind.TOOL, Span.Kind.LLM, Span.Kind.LLM, Span.Kind.TOOL, Span.Kind.LLM),
                 rows.stream().map(Span::kind).toList());
-        assertTrue(rows.stream().allMatch(row -> row.run().equals(runId)));
+        assertTrue(rows.subList(0, 3).stream().allMatch(row -> row.turnId().equals(turns.get(0).id())));
+        assertTrue(rows.subList(3, 6).stream().allMatch(row -> row.turnId().equals(turns.get(1).id())));
         assertEquals(rows, announced, "the listener saw the same rows in the same order");
     }
 
@@ -50,7 +53,7 @@ class RunLogTest {
         ToolCaller checking = new ToolCaller(registry) {
             @Override
             public ToolResult call(ToolCall call) {
-                Span last = store.load(announced.getLast().run()).getLast();
+                Span last = store.load(announced.getLast().turnId()).getLast();
                 assertEquals(Span.Kind.LLM, last.kind(), "the LLM row is stored before its tool runs");
                 assertTrue(last.response().contains(call.toolName()));
                 return super.call(call);
@@ -58,7 +61,7 @@ class RunLogTest {
         };
         LLMProxy checkingToo = (context, tools) -> {
             if (!context.spans().isEmpty()) {
-                Span last = store.load(context.spans().getLast().run()).getLast();
+                Span last = store.load(context.spans().getLast().turnId()).getLast();
                 assertEquals(Span.Kind.TOOL, last.kind(), "the TOOL row is stored before the model is asked again");
             }
             return new RuleBasedLLM().next(context, tools);
