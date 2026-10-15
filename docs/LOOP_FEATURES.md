@@ -10,7 +10,7 @@ Small things the loop does that have no page of their own. Each one: what it doe
 | a clock on every tool call | built: the agent's `toolTimeoutMs`, the call is cut off, the answer names it | the chaos stream in the demo |
 | the agent's tool list is the gate | built: a tool the model names outside the list is `DENIED` without running, the loop moves on | `OrchestratorTest` |
 | the pass cap and the budget | built: `maxPasses` per agent, `maxModelCalls` shared down a sub-agent tree, the depth cap | `OrchestratorTest`, `SubAgentTest`, the loop agent in the demo |
-| chaining across passes | the loop and resume support it; the stub decides in one pass, so no chain shows in v2 | the sub-agent run is the one chain the demo shows |
+| chaining across passes | the loop and resume support it; the stub decides once, in pass 1, and says done in pass 2, so no chain shows in v2 | the sub-agent run is the one chain the demo shows |
 | dedupe | built: a repeated call is a reference | the follow-up turn in the demo |
 | the answer | built: the last pass's results relayed, failures named; a model's final reply replaces it | every turn in the demo |
 
@@ -105,7 +105,7 @@ Where: `Orchestrator.loop` for the cap and the budget, `TurnBudget`, `Orchestrat
 ## Chaining across passes
 
 - The loop is the chain. Pass N's tool result is in the context the model sees in pass N+1, so a model that needs a second lookup asks for it next, and so on until it says done. With a real model: "Where is my order ORD-1?" → pass 1 `order_status(ORD-1)` → "SHIPPED, shipment SHP-1" → pass 2 `shipping_status(SHP-1)` → pass 3 done. Nothing in the loop changes for that; resume works in the middle of a chain, because every pass is rows in the store.
-- The stub decides in one pass: any tool whose match fits the question, then done. So no chain of lookups appears in a v2 run. Saying so plainly beats faking one.
+- The stub never chains. It reads the question once, in pass 1: every tool whose keywords and id pattern fit is called, one as a single call, several as one batch run together. In pass 2 it sees a call row in the context and says done. The missing piece is a decision made from a result, "the order says shipment SHP-1, look that up", and that is the model's job. Saying so plainly beats faking it with a rule.
 - The one chain v2 does show is the sub-agent run: the parent decides, the child runs its own pass, the parent gets the answer and finishes. Six rows, one turn:
 
 ```
