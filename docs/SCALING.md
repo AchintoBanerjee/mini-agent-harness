@@ -1,15 +1,15 @@
 # Scaling and performance
 
-[The pods](#the-pods) · [The stream](#the-stream) · [The GPU](#the-gpu) · [The tools and the state](#the-tools-and-the-state) · [Performance: what the model sees](#performance-what-the-model-sees) · [Out of scope](#out-of-scope)
+[Scaling the orchestrator pods, CPU](#scaling-the-orchestrator-pods-cpu) · [Scaling the persistent connection](#scaling-the-persistent-connection) · [Scaling the GPU, the one thing that does not autoscale](#scaling-the-gpu-the-one-thing-that-does-not-autoscale) · [Scaling the tools and the state](#scaling-the-tools-and-the-state) · [Performance: what the model sees on every call](#performance-what-the-model-sees-on-every-call) · [Out of scope](#out-of-scope)
 
 The loop itself is cheap. What has to scale is around it: the pods that run the loop, the connections that carry the answer back, the one GPU every tenant shares, and the context the model reads on every call. Durability already moved the loop behind a queue; this page builds on that picture.
 
-## The pods
+## Scaling the orchestrator pods, CPU
 
 - Standard: Kubernetes autoscales the API pods on load, and the orchestrator pods on load and on the queue depth. Provision for spikes, keep a few pods warm. Nothing new here.
 - The consequence that matters: with the queue and the autoscaling, the pod that holds the user's connection and the pod that runs their turn are different pods, and pods come and go all the time. That is the next problem.
 
-## The stream
+## Scaling the persistent connection
 
 The user's connection is open on one API pod. Their turn is running on an orchestrator pod. Tomorrow both are different pods. The orchestrator has to reach whichever pod holds the connection, every time.
 
@@ -31,7 +31,7 @@ I pick the Redis Stream: we already run the cluster, and the buffer is the whole
 
 **What I ran.** The first shape streamed the turn on the same request that started it, one pod running the whole loop inside that request's timeout; a mid-turn drop lost the in-flight events and kept what was persisted at the end. My own note for the next shape is the thin API layer subscribing by run id; the Stream with replay from the last id is the designed fix, not shipped.
 
-## The GPU
+## Scaling the GPU, the one thing that does not autoscale
 
 The GPU does not autoscale. It is a fixed number of cards shared by every tenant, so the job is to use all of it and never let it fall over.
 
@@ -58,13 +58,13 @@ I pick the meter and the shared service, because a pod only ever sees its own sl
 
 **What I ran.** Nobody asked for a capacity system; I drove it, the platform's first shared service. The first rate limit counted calls, not work, and getting the number right took incidents: too loose one day, too tight the next. We wanted the provider's utilization and could not use it, so we calculated it ourselves and ran the GPU to saturation to get the formula; when the provider swapped the GPU type under a cluster the numbers fell apart, and the GPU type became part of the calibration. Live got a fair share per tenant on that number. Batch got a queue, admitted into headroom under a threshold we run conservative, a run at a time, never cancelled; I wanted to pause runs mid-flight, the team said too invasive, and they were right. The second gate for live, over the share into the room, is designed on the same number and not built. My part: the direction, the business case, and the admission side, the queue, the worker, the advisor and the runbooks.
 
-## The tools and the state
+## Scaling the tools and the state
 
 - **Tools.** One question is several tool calls and an authorization check for each of them, so the downstreams see ten to fifty times the traffic the same work makes through the UI. They were sized for a human clicking, not an agent looping. Every tool call gets a timeout, and the next fixes are a pooled client, a per-tool limit and a circuit breaker on the hottest path.
 - **State.** The step row is the ledger; telemetry is written behind it, never one fat synchronous write per step. The scar: with no telemetry store, the relational state store quietly absorbed the observability writes too, tens of rows and a hundred kilobytes per conversation, and write latency became conversation latency. The right answer is a stream into a column store, separated from the state store on day one.
 - **Tenancy.** The tenant id rides on the turn and on every call. Where the tenant owns the infrastructure, isolation is routing. At the one shared step, the GPU, isolation is admission: that is the governor above.
 
-## Performance: what the model sees
+## Performance: what the model sees on every call
 
 A model call is stateless; on every pass the harness decides what the model reads, and that decision is most of the cost of a turn.
 
