@@ -36,7 +36,8 @@ Page: [docs/DURABILITY.md](docs/DURABILITY.md)
 
 - The split: the HTTP face and the loop become two processes with a queue between them, so a turn outlives the request that created it. A turn is a message; the visibility timeout is the lease; the worker extends it on every saved step and acks last.
 - A dead worker's message comes back by itself; the next worker loads the saved rows and continues, mid-chain, without asking the model again for a decision it has.
-- The contract: saved steps run once, the one call in flight at a crash at least once, so tool writes are idempotent on the key the harness gives them. Temporal is the step up; it was never evaluated, and the shape scoped here is its shape.
+- The contract: a saved step runs once; the one call in flight at the crash runs at least once; so a tool that writes is idempotent on the key the harness gives it.
+- Temporal, a workflow engine, is the step up from the queue: the same contract, with the bookkeeping done for you. I never evaluated it, and what is scoped here has the shape it would have on Temporal.
 - What the POC runs: one build, two processes on one laptop, one SQLite file, the queue table standing in for SQS. Not containers.
 
 ## 5 · Scaling
@@ -44,27 +45,36 @@ Page: [docs/DURABILITY.md](docs/DURABILITY.md)
 Page: [docs/SCALING.md](docs/SCALING.md)
 
 - The pods scale on load and on queue depth; nothing new there.
-- The persistent connection: the queue cut the line between the pod holding the client and the pod running the turn. The loop is the producer of the run's stream; a Redis Stream per job id carries it to whichever API pod holds the connection, with replay from the last id; the store is the fallback. v2 has the same shape on one machine.
-- The GPU, the one thing that does not autoscale: a governor in front of the shared model. On my platform I built the meter, saturation from calls and tokens because the provider's number comes late, the fair share per tenant for live, and the batch queue into the room; lending the room to live calls over their share is the design on the same number. Nothing of it is in v2, where the model is a stub.
-- Tools and state: timeouts and limits on the downstreams, telemetry off the state store.
+- The persistent connection: once the queue splits the API from the worker, the client's connection is on one pod and the turn runs on another. The loop produces the run's stream. A Redis Stream per job id carries it to whichever API pod holds the connection, with replay from the last id; when the stream is gone, the client reads the store instead.
+- v2 has the same shape on one machine: the worker pushes every event to the API over HTTP, and the API holds the stream in memory as the stand-in for the Redis Stream.
+- The GPU is the one thing that does not autoscale, so a governor sits in front of the shared model. On my platform I built three parts of it. The meter: saturation computed from calls and tokens, because the provider's own number comes too late. The fair share: each tenant gets a share of the GPU for its live calls. The batch queue: a batch run is admitted only into the room, the capacity that tenants are not using.
+- The fourth part is design, not built: admitting a live call over its tenant's share into that same room, on the same saturation number. None of this is in v2, where the model is a stub.
+- Tools and state: timeouts and limits on the downstream services the tools call; telemetry written to its own store, not into the state store. v2 has the timeout on every tool call; the limits and the separate telemetry store are design.
 
 ## 6 · Performance
 
 Page: [docs/PERFORMANCE.md](docs/PERFORMANCE.md)
 
-- Time and tokens, paid on every call. Built in v2: dedupe of tool results, and agent as a tool against multi-agent leakage. Design, from my platform: the prefix cache and the order of the prompt, and tools in hundreds with one search tool in the prompt and the catalog and the index behind it. The leak in the DAG is on the same page.
+- Time and tokens, paid on every call. Built in v2: dedupe of tool results, and agent as a tool, the answer to multi-agent leakage.
+- Design, from my platform: the prefix cache, which the order of the prompt decides; and tools in hundreds, with one search tool in the prompt and the catalog and the index behind it.
+- The same leak inside a DAG (the pattern in [7 · Sub-agents](#7--sub-agents)) is on that page too.
 
 ## 7 · Sub-agents
 
 Page: [docs/SUBAGENTS.md](docs/SUBAGENTS.md)
 
-- Three patterns I have run at scale: group chat or supervisor, which leaks the transcript and doubles the calls; agent as a tool, built here, where the child sees the goal and its own tools and the parent gets the answer; the DAG for a known sequence, best on a workflow engine.
+- Three patterns I have run at scale.
+- Group chat, or a supervisor: every agent sees the whole transcript, and the calls double.
+- Agent as a tool, built in v2: the child sees the goal and its own tools; the parent gets the answer.
+- The DAG, for a sequence known up front: best on a workflow engine; design here, not built.
 
 ## 8 · Measuring the harness
 
 Page: [docs/EVAL.md](docs/EVAL.md)
 
-- Two questions, never one score: did the loop do its job, was the answer right. A golden set with the expected trace before ship, built; a sampled judge live with named rates per agent version, designed. The harness scores are facts in the rows and code scores them exactly.
+- Two questions, never one score: did the loop do its job, and was the answer right.
+- Built: a golden set with the expected trace, run before ship. Designed: a sampled judge on live turns, with named rates per agent version.
+- The harness scores are facts already in the rows, so code scores them exactly.
 
 ## 9 · The picture at the end
 
@@ -73,7 +83,7 @@ Three diagrams, in the order the pages added them, are the harness at scale: [th
 ## 10 · What I would build next, in order
 
 1. The live loop of the eval: a sampled judge on a schedule, rates per agent version, a confirmed failure back into the golden set.
-2. The Redis Stream per job id and the dead-letter queue, replacing the two stand-ins.
+2. The Redis Stream per job id in place of the in-memory stream, and SQS with its dead-letter queue in place of the queue table.
 3. The tool catalog, the index and the search tool.
 4. The governor in front of the model.
 5. The DAG on a workflow engine for the sequences that are known up front.

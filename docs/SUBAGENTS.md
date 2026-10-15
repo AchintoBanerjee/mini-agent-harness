@@ -27,11 +27,11 @@ One question decides: do I know the sequence up front? Known → the DAG. Unknow
 Things to watch for:
 
 - one agent's context leaking into another's: the answer should cross, not the transcript;
-- the same leak inside a DAG: the router node, a model or a plain rule, and the nodes after it share one conversation; a node's tool calls and a child agent's context must stay inside the node, only its output passes on, or the DAG is a broadcast again. Watch this one closely; it is common;
+- the same leak inside a DAG, and it is common. The router node, a model or a plain rule, and the nodes after it share one conversation. A node's tool calls and any child agent's context must stay inside the node; only its output passes on. Otherwise the DAG is a broadcast again;
 - a supervisor that must see everything to decide anything;
 - cost per hop that nobody measured;
-- an agent that delegates to itself (the depth cap);
-- a tree that burns passes (the shared budget).
+- an agent that delegates to itself, which needs a cap on depth;
+- a tree of agents that spends the whole turn's model calls, which needs one budget shared down the tree.
 
 ## What I ran, on my platform in production
 
@@ -62,13 +62,13 @@ The child sees only what the parent hands it: the goal, and its own tools. The p
 - **Tool layer**: a fourth tool type, `agent`: the file names the agent, the loop that offers the tool binds it to itself.
 - **Child loop**: the logistics agent's own loop, tools and timeout; it returns an answer, never its transcript; fresh per call.
 - **Model**: the same stub for both; it hands the child the whole question as its goal.
-- **Run store**: no new row, no new table; the child's spans carry `parent` and `depth` in `attrs`, so the API, the stream and `replay` show the tree.
-- **Bounds in the loop, not in the prompt**: depth cap 2, so an agent that lists itself ends with an `ERROR` row, `depth limit`, never a stack overflow; one budget of model calls per turn (`maxModelCalls`, default 20) shared down the tree, and spent means `FAILED` with a NOTE row, `budget exhausted`.
+- **Run store**: no new table, and no turn row for the child, whose rows land under the parent's turn id; the child's spans carry `parent` and `depth` in `attrs`, so the API, the stream and `replay` show the tree.
+- **Bounds in the loop, not in the prompt**: a depth cap of 2, so an agent that lists itself as a tool ends with an `ERROR` row, `depth limit`, never a stack overflow. And one budget of model calls per turn (`maxModelCalls`, default 20), shared down the tree; when it is spent the turn is `FAILED`, with a NOTE row, `budget exhausted`.
 - Out of scope for the POC: a worker that dies inside a child loop (resume reads the saved rows as one flat list); two agent tools in one pass, which interleave their rows.
 
 ## The implementation
 
-An agent tool is a file; the loop that offers it binds the handler to itself; the handler runs a child loop and hands the answer back. On another host the same call goes over the network to that agent; nothing else changes.
+An agent tool is a file. The loop that offers it binds the handler to itself, and the handler runs a child loop and hands the answer back. That is what v2 does: the child runs inside the tool call. If that agent lived on another host, the same call would go over the network to it, and nothing else would change.
 
 <details><summary>the tool file: type agent</summary>
 
@@ -111,9 +111,11 @@ The child is built from the parent's pieces, with its own agent, tool caller and
 What changed:
 
 - a tool type, `agent`, in the loader, and a row kind, `AGENT`;
-- a `TurnBudget` per turn for span numbers and model calls, passed with depth and parent span into the loop's constructor, which binds its agent tools to itself;
-- `record` numbers rows from the budget and stamps the two keys on a child's rows; `loop` asks the budget before each model call;
-- the caller runs the bound copy; indentation in the printers.
+- a `TurnBudget` per turn: it hands out the span numbers and counts the model calls;
+- the loop's constructor takes the budget, the depth and the parent span, and binds the loop's agent tools to itself;
+- `record` takes each row's number from the budget and stamps `parent` and `depth` on a child's rows;
+- `loop` asks the budget before each model call;
+- the caller runs the bound copy, and the printers indent a child's rows.
 
 What did not change: the loop's steps (ask, write, run, write, repeat), the resume path, the store, the schema, the queue, the endpoints, the stream.
 
@@ -275,12 +277,12 @@ done r-1e43 · 9 spans · 173 ms · DONE in harness.db · acked · handler calls
 ```
 </details>
 
-- Six rows, one numbering, one turn: 1 the parent's decision, 2 to 4 the child's with `parent 1` and `depth 1`, 5 the `AGENT` row with the child's answer, 6 the parent's done; the turn's `answer` is the child's.
+- Six rows, one numbering, one turn, as the span table under [Agent as a tool](#agent-as-a-tool) lists them.
 - Span 2's `attrs` hold the child's question, the goal, and nothing of the parent's conversation; span 5 is the only row of the child's work the parent's loop saw.
 - The loop agent goes three loops deep and stops: row 4, at depth 2, is the refused call, `depth limit`, an `ERROR`; each loop above relays it and says done; six model calls, no stack overflow.
 
 ## The DAG
 
-The other pattern, for when the sequence is known. Most of the time you do know your workflow, and workflows can be long, so scaling them is the concern. The DAG holds the flow and the model never decides it: the routing is the edges, zero tokens, replayable, testable. Where a model node does route, at the top, it routes on its inputs only: the nodes share one conversation, so each node's tool calls and child context stay inside the node and only its output goes on, or the leak from pattern 1 is back.
+The other pattern, for when the sequence is known. Most of the time you do know your workflow, and workflows can be long, so scaling them is the concern. The DAG holds the flow and the model never decides it: the routing is the edges, zero tokens, replayable, testable. Where a model node does route, at the top of the DAG, it routes on its inputs only. The leak to guard is the one in the watch list under [The choices](#the-choices): the nodes share one conversation, so only a node's output may pass to the next.
 
 For this proof of concept I built agent as a tool, because the example's sequence is not known up front and it fits the loop we already have. The DAG is just as implementable. My platform ended up with both, the DAG on our own engine. If I built it again I would put the DAG on a workflow engine such as Temporal, for the durability and the replay: a long workflow survives its worker. I have not run one, so that is a direction, not a result. Which one a platform leans on depends on its workloads.

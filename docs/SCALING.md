@@ -7,7 +7,7 @@ The loop itself is cheap. What has to scale is around it: the pods that run the 
 ## Scaling the orchestrator pods, CPU
 
 - Nothing new here, and nothing in v2: the API pods autoscale on request load, the orchestrator pods on queue depth, a few kept warm for spikes. That is what my platform ran once the queue was in: the lever became queue depth, not request count.
-- The consequence that matters: the queue already cut the direct line between the user's connection and the loop that runs their turn; the pod that holds the connection and the pod that runs the turn are different pods, with nothing joining them. That is the next problem.
+
 
 ## Scaling the persistent connection
 
@@ -20,7 +20,7 @@ The loop itself is cheap. What has to scale is around it: the pods that run the 
 - **A Redis Stream per job id.** The orchestrator appends each step to it as the step happens. The API pod holding the connection reads the stream from the last id the client saw and forwards each entry as a Server-Sent Event.
 - **Reconnect on any pod.** The client sends the last id it saw; the new pod reads from there. Nothing lost, nothing twice. A TTL clears the stream after the turn is done.
 - **Why a Stream and not pub/sub.** Pub/sub has no buffer: a client away for a second misses what was published. A Stream keeps the entries with ids, so the gap is replayed from Redis. Other queues do this too, but they are heavier, and my platform already runs a Redis cluster.
-- **The stream is for the live experience.** The orchestrator writes every step and the final answer to the store anyway, so if the stream fails the API or the client gets the answer from the store. That works, and it is a bad experience; the stream is what makes it a good one. v2 has the same shape on one machine: the worker pushes each event to the API over HTTP, the API holds the run's stream in memory and reads the store only when the stream is gone.
+- **The stream is for the live experience.** The orchestrator writes every step and the final answer to the store anyway. If the stream fails, the API or the client gets the answer from the store: that works, and it is a bad experience. The stream is what makes it a good one. v2 has the same shape on one machine: the worker pushes each event to the API over HTTP, the API holds the run's stream in memory, and the store is read only when the stream is gone.
 - **A dropped connection is not a cancel.** The turn keeps running; cancel is its own request.
 
 | Option | How it works | What you get | What it costs |
@@ -44,14 +44,14 @@ The GPU does not autoscale. It is a fixed number of cards shared by every tenant
 ![the governor in front of the GPU](scaling-gpu.svg)
 
 - **The problem.** Open the GPU to everyone and one busy tenant slows the model for all of them; a slow model is a slow platform. Close it and you pay for an idle GPU while customers wait for their batch. On my platform, in production, we hit both: let it in and it slowed everyone's live chat, keep it out and the GPU sat idle while customers waited.
-- **The catch.** The decision needs the GPU's utilization, and the cloud provider's number is a reporting metric: minutes late, behind a rate-limited metrics API. You call it for reporting, not for a decision made per call. A late number is useless for the gate and perfect for the calibration.
-- **So the meter computes saturation itself,** per window, from what every call shows: calls, input tokens, output tokens, weighted. The weights come from running the GPU to saturation and reading what it processed when the time started going up, keyed by GPU type and model family. Output tokens carry most of the weight: generating is the cooking, reading the input is cheap.
+- **The catch.** The decision needs the GPU's utilization, and the cloud provider's number is a reporting metric: minutes late, behind a rate-limited metrics API. A number that late cannot gate a call. It is exactly right for the calibration in the next bullet, where minutes late does not matter.
+- **So the meter computes saturation itself,** per window, from what every call shows: calls, input tokens, output tokens, each with a weight. The weights come from a calibration run: push the GPU until calls start taking longer, and record how many calls and tokens it was handling at that point. One set of weights per GPU type and model family. Output tokens carry most of the weight: generating is the cooking, reading the input is cheap.
 - **Gate one, the fair share.** Every tenant gets a share of the GPU; within the share a live call is always admitted.
-- **Gate two, the room.** A tenant that is not using its share leaves room; that capacity is not set aside anywhere, it is simply wasted. So over the share a call is admitted too, but only while the room is substantial, under the threshold.
+- **Gate two, the room.** A tenant that is not using its share leaves room. That capacity is not set aside anywhere; it is simply wasted. So a call over its tenant's share is admitted too, but only while the room is substantial: the meter's number has to be under the threshold.
 - **Why the threshold.** It is the margin: a tenant coming back for its own share must never queue behind someone else's burst.
-- **Batch.** Admitted the same way, a whole run at a time, only into that room; once admitted it runs to the end, the wait between calls is the brake, a run is never paused mid-flight. On my platform this is what runs; the room for live calls over their share is the design, on the same number.
+- **Batch.** A batch run goes through gate two only: admitted a whole run at a time, and only into the room. Once admitted it runs to the end. The brake is the wait between calls; a run is never paused mid-flight. On my platform this is what runs.
 - **The threshold is configurable per cluster, and we run it conservative,** because the cost of a run is an estimate and the meter is a window behind.
-- **The guarantee for batch:** wait for headroom up to your deadline, then run through the live channel under your tenant's share. Worst case is what you had before. Rising deadline breaches are the signal to buy more GPU, with the evidence in hand.
+- **The guarantee for batch:** a run waits for room up to its deadline; if the deadline arrives first, it runs through the live channel under its tenant's share. The worst case is what batch had before the governor. Rising deadline breaches are the signal to buy more GPU, and the breaches themselves are the evidence.
 
 | Option | How it works | What you get | What it costs |
 |---|---|---|---|
@@ -77,7 +77,7 @@ I pick the meter and the shared service, because a pod only ever sees its own sl
 ## Scaling the tools and the state
 
 - **Tools.** On my platform, in production, one question was several tool calls and an authorization check for each of them, so the downstreams saw ten to fifty times the traffic the same work made through the UI. They were sized for a human clicking, not an agent looping. v2 has the timeout on every tool call ([a clock on every tool call](V2_FEATURES.md#a-clock-on-every-tool-call)). The pooled client, the per-tool limit and the circuit breaker on the hottest path are the design, not built here.
-- **State.** The step row is the ledger; telemetry is written behind it, never one fat synchronous write per step. On my platform, in production, we learned this the hard way: we had no telemetry store, so the observability writes went into the same relational store as the state, synchronous in the loop, tens of rows and about a hundred kilobytes per conversation, and write latency became conversation latency. The right answer is a stream into a column store, separated from the state store on day one.
+- **State.** The step row is the ledger. Telemetry is written after it, off the request path, never as one fat synchronous write per step; in v2 this is design, not built. On my platform, in production, we learned this the hard way. We had no telemetry store, so the observability writes went into the same relational store as the state, synchronous in the loop: tens of rows and about a hundred kilobytes per conversation, and write latency became conversation latency. The right answer is a stream into a column store, separate from the state store from day one.
 - **Tenancy.** Design, nothing in v2: the tenant id rides on the turn and on every call. On my platform, where the tenant owns the infrastructure, isolation is routing. At the one shared step, the GPU, isolation is admission: that is the governor above.
 
 ## What v2 implements

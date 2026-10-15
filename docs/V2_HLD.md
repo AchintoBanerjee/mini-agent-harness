@@ -10,8 +10,8 @@ The harness as a small service: you call it over HTTP, its state lives in one SQ
 
 - **End users** ask a question and get a job id back at once; the answer follows as a stream.
 - **API layer** is the one face: `POST /runs` writes the turn row and returns its id; `GET /turns/{id}` reads it; `GET /turns/{id}/events` streams it.
-- **Orchestrator** is the loop: build the context, call the model, run the tool it asks for, repeat until the model says done or the agent's pass cap hits. Every step is written to the store before the next one is taken. What else the loop already does, parallel tool calls, the clock on every call, the tool-list gate, the caps, the answer, is on the next page, [v2: additional features](V2_FEATURES.md), each with a run.
-- **One service, two layers.** The HTTP face and the loop are drawn as one service here. Splitting them, so a turn outlives the request that created it, is the durability page, and v2's `serve` and `worker` commands are that split; the Try it section runs both.
+- **Orchestrator** is the loop: build the context, call the model, run the tool it asks for, repeat until the model says done or the agent's pass cap hits. Every step is written to the store before the next one is taken. The loop already does more than that: parallel tool calls, a clock on every tool call, the agent's tool list as the gate, the pass cap and the budget, and the answer. Each is on the next page, [v2: additional features](V2_FEATURES.md), with a run.
+- **One service, two layers.** The diagram draws the HTTP face and the loop as one service. In v2 they already run as two processes, `serve` and `worker`, so a turn outlives the request that created it; the Try it section runs both. Why they are split is on [the durability page](DURABILITY.md).
 - **Tool layer** is the registry built from `tools/*.json`; the file's type picks the adapter, the agent's file says which tools it may call and for how long.
 - **Model** is a rule stub today; a real model goes behind the same interface, and in production it is the one step shared by every customer.
 - **Run store** is SQLite here and the tenant database at scale, same tables.
@@ -65,7 +65,9 @@ Three tables, from the whiteboard: a conversation has turns, a turn is one job, 
 | `turn` | `id` (the job id) · `conversation_id` · `question` · `answer` · `status` (QUEUED · RUNNING · DONE · FAILED) · `claimed_by` · `attempts` · `created_at` · `updated_at` |
 | `span` | `turn_id` · `span` (the step number) · `pass` · `kind` (LLM · TOOL · AGENT · NOTE) · `request` · `response` · `status` · `ms` · `attrs` (JSON) · key (`turn_id`, `span`) |
 
-The durability section adds a fourth, `queue` (`turn_id` · `visible_at` · `receives`). Span numbers run on through a conversation, so a later turn points at an earlier turn's span by one number.
+v2 has a fourth table, `queue` (`turn_id` · `visible_at` · `receives`), the queue that `POST /runs` writes to; [the durability page](DURABILITY.md) explains it.
+
+Span numbers run on through a conversation, so a later turn points at an earlier turn's span by one number.
 
 <details><summary>the SQL that creates the tables</summary>
 
@@ -94,9 +96,9 @@ CREATE TABLE IF NOT EXISTS span (
 | POST | `/turns/{id}/events` | the worker's push: body `{"event","data"}`, appended to the run's stream; the stand-in for the Redis Stream append | `204`; `404` |
 | POST | `/evals` | the golden set, scored in the server | `200`, the table as `cases` and `lines` |
 
-The server is the JDK's own HTTP server, one virtual thread per request, JSON by hand. No framework. In the code the loop is already in its own process, `worker`, over the same file; why is the durability page.
+The server is the JDK's own HTTP server, one virtual thread per request, JSON by hand. No framework.
 
-`POST /runs` writes the turn row and its queue message in one transaction (`RunQueue.submit`), answers `202` with the id, and a worker runs the loop; the handler is `HttpApi.submit`.
+`POST /runs` (`HttpApi.submit`) writes the turn row and its queue message in one transaction (`RunQueue.submit`) and answers `202` with the id. The loop runs in the other process, `worker`, over the same SQLite file: it takes the message and runs the turn.
 
 <details><summary>proof: POST a question, then GET the turn</summary>
 
@@ -192,7 +194,7 @@ $ curl -s http://localhost:62588/turns/r-fda1
   } ]
 }
 ```
-The `202` came back before any worker had looked. One second later the turn is `DONE` with five spans over three passes, the answer with both lines, and the pid of the worker that ran it. Span 3 is the chain: pass 2 asked for the shipment because span 2 named it. Each TOOL span's `key` is the job id plus the span that decided it, the idempotency key a tool that writes would use.
+`claimedBy` is the pid of the worker that ran it. Span 3 is the chain: pass 2 asked for the shipment because span 2 named it. Each TOOL span's `key` is the job id plus the span that decided it, the idempotency key a tool that writes would use.
 </details>
 
 ## Streaming the answer
@@ -212,7 +214,13 @@ The `202` came back before any worker had looked. One second later the turn is `
 
 I pick SSE: the answer flows one way, and the protocol already has the reconnect-with-last-id a step log needs. How that open connection scales across nodes is its own section.
 
-Three rules carry the stream, and they are easier to say than to read out of the code. The loop forwards each piece of the model's final reply to its listener, and only the parent loop does: a child's answer is a tool result for its parent, not text the user sees (`Orchestrator.finish`). The worker's listener does three things per row, in this order: extend the lease, push the row to the API's stream, print it; print may be the simulated crash, so the row reaches the stream before the worker dies (`Worker.Forwarding`). The API reads the run's stream from the client's last id with a blocking read and writes each entry as an event; `done` ends the response (`HttpApi.events`). `RunStreams` is the stand-in for the Redis Stream: entries with ids per turn, a blocking read, `done` ends it, a 60 s time to live, no sweeper. `HttpPush` is the worker's side of `POST /turns/{id}/events`. On `GET /turns/{id}/events` the one place that sends rows from the store is `replay`, and its comment calls it the fallback; `GET /turns/{id}` reads the store by design, that is the polling row above.
+Where the stream lives in the code:
+
+- Only the parent loop streams answer text. The loop forwards each piece of the model's final reply to its listener; a child agent's answer is a tool result for its parent, not text the user sees (`Orchestrator.finish`).
+- The worker's listener does three things per row, in this order: extend the lease on the turn, push the row to the API's stream, print it. The simulated crash of the durability page happens at the print, so the row reaches the stream before the worker dies (`Worker.Forwarding`).
+- The API reads the run's stream from the client's last id with a blocking read and writes each entry as an event; `done` ends the response (`HttpApi.events`).
+- `RunStreams` is the stand-in for the Redis Stream: entries with ids per turn, a blocking read, `done` ends it, a 60 s time to live, no sweeper. `HttpPush` is the worker's side of `POST /turns/{id}/events`.
+- `replay` is the only code that sends saved rows on `GET /turns/{id}/events`; it is the fallback. `GET /turns/{id}` reads the store by design: that is the polling row in the table above.
 
 <details><summary>proof: the stream, then a reconnect with Last-Event-ID</summary>
 
@@ -338,7 +346,7 @@ data: {"turnId":"r-fda1","text":"2026-10-16"}
 event: done
 data: {"turnId":"r-fda1","status":"DONE","answer":"Order ORD-1: SHIPPED, shipment SHP-1\nShipment SHP-1: IN TRANSIT, arriving 2026-10-16"}
 ```
-Five steps, ten tokens, then `done`; the reconnect starts at 3. In the `--slow` section of the demo the stream was opened before the worker started and received every step and every token as they happened; the saved text has no timestamps, so the overlap shows in the NOTE row, wall 305 ms against work 604 ms (`demo-output.txt`).
+Five steps, ten tokens, then `done`; the reconnect starts at 3. In the demo's `--slow` section the stream was opened before the worker started and received every step and every token as they happened. The saved text has no timestamps, so `demo-output.txt` cannot show that timing; what it does show is the two tools of the parallel run overlapping, in the NOTE row: wall 305 ms against work 604 ms.
 </details>
 
 ## Persistence
@@ -374,7 +382,7 @@ span  pass  kind  status  ms
 5     2     TOOL  OK      0 
 6     3     LLM   OK      0 
 ```
-Seven turns from one run of the demo, two of them the sub-agent page's; the last one is the durability turn, two attempts, six spans: the resume note, then the chain's second lookup and the done, written by the second worker.
+Seven turns from one run of the demo, two of them from the sub-agent page. The last, `r-c128`, is the durability page's turn: two attempts and six spans. The second worker wrote the last four: the NOTE that says it resumed, then the chain's second lookup (pass 2) and the done (pass 3).
 </details>
 
 ## Agents and tools are metadata

@@ -5,8 +5,8 @@ A small agent harness in plain Java 21: a loop that hands the state to a model, 
 I built an agent platform that thousands of customers use in production, and ran it for several years. Everything on these pages is that experience, the platform I built and what it taught me, applied to a small harness.
 
 - `v1/` is the harness exactly as designed and built in the live round (git tag `v1`). It is frozen.
-- `v2/` extends it into a small service: HTTP as the face, a turn as a job whose answer streams back, a queue with a lease so a dead worker's turn is resumed by the next one, an agent as a tool, parallel and chained tool calls, dedupe, a golden set that scores the harness itself.
-- [DESIGN.md](DESIGN.md) is the write-up: v1 and its gaps, what v2 adds, then durability, scaling, performance, sub-agents and measurement, each on its own page with the design, the choices, what I ran in production, and, where v2 builds it, the proof.
+- `v2/` extends it into a small service. HTTP is the face. Each question is a turn, run as a job, and its answer streams back. A queue with a lease lets the next worker resume a dead worker's turn. It also adds an agent as a tool, parallel and chained tool calls, dedupe, and a golden set that scores the harness itself.
+- [DESIGN.md](DESIGN.md) is the write-up. It covers v1 and its gaps, then what v2 adds. Durability, scaling, performance, sub-agents and measurement each have a page of their own: the design, the choices, what I ran in production, and the proof where v2 builds it.
 
 ![v2 HLD](docs/hld.svg)
 
@@ -14,11 +14,11 @@ I built an agent platform that thousands of customers use in production, and ran
 
 What you need:
 
-- Java 21 or newer (`java -version`). On JDK 24 or newer the demo adds `--enable-native-access=ALL-UNNAMED` for you; by hand, put it right after `java` or the SQLite driver prints a warning.
+- Java 21 or newer (`java -version`). On JDK 24 or newer, `--enable-native-access=ALL-UNNAMED` must come right after `java`, or the SQLite driver prints a warning. The demo adds it for you; when you run commands by hand, add it yourself.
 - Maven 3.6 or newer (`mvn -version`). The first build downloads the two dependencies, Jackson and the SQLite driver, so the network is needed once.
 - `curl` and a bash shell: macOS or Linux as they come; on Windows, WSL.
-- Nothing for SQLite. The driver carries the library; `v2/harness.db` is created on first use and the demo starts from an empty one. The `sqlite3` command is only needed if you want to run the two queries on the HLD page yourself.
-- Ports: the demo picks a free port. By hand, the server listens on `localhost:8080` (`--port` to change) and the worker pushes to it (`--api`).
+- Nothing for SQLite: the driver carries the library. `v2/harness.db` is created on first use, and the demo starts from an empty one. The `sqlite3` command is needed only to run the two queries in [docs/V2_HLD.md](docs/V2_HLD.md) yourself.
+- Ports: the demo picks a free port. By hand, the server listens on `localhost:8080` (`--port` to change), and the worker pushes its events to the server at that address (`--api` to change).
 
 ```bash
 ./demo.sh
@@ -26,7 +26,7 @@ What you need:
 
 About a minute for the first build, under a minute for the demo. The tests are separate: `cd v2 && mvn -q test`, about ten seconds.
 
-It compiles v2 and runs every command of the manual in order:
+`demo.sh` compiles v2 and runs every command of the manual, [v2/README.md](v2/README.md), in order:
 
 - a server and a worker, then the agents and tools
 - a turn that chains two lookups, and its stream
@@ -36,7 +36,7 @@ It compiles v2 and runs every command of the manual in order:
 - the concierge handing a question to the logistics agent, then the depth cap
 - a worker killed after its second row, and the next one continuing the chain
 - the eval table, with two failures left in on purpose
-- the CLI that remains
+- the rest of the CLI, `replay` and `eval`
 
 [docs/demo-output.txt](docs/demo-output.txt) is the saved output of that script, so the whole demo can be read without running it.
 

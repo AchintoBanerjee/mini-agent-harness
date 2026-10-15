@@ -17,15 +17,15 @@
 
 ![durability](durability.svg)
 
-- **The split.** The HLD drew the HTTP face and the loop as one service. Here they become two processes with a queue between them: the API process takes the request, a worker process runs the turn. A turn is seconds of model and tool calls and has to outlive the request that created it, and the two scale on different signals, requests on one side and queue depth on the other.
+- **The split.** The HLD page, `V2_HLD.md`, drew the HTTP face and the loop as one service. Here they become two processes with a queue between them: the API process takes the request, a worker process runs the turn. Two reasons. A turn has to outlive the request that created it. And the two scale on different signals: requests on one side, queue depth on the other.
 - **End users → API layer**: the question comes in; the API writes the turn row (`QUEUED`) and a message on the queue in one transaction, and returns the turn's id, the job id, at once. No loop runs in this process.
 - **Run queue**: the message is the turn. `receive` hides it for the visibility window, and that window is the lease: whoever holds it is the only worker on the turn.
 - **Workers**: a worker receives, claims the turn row (`RUNNING`, its process id, attempts + 1) and runs the loop; each step is written to the store before the next one, and each written step extends the lease.
 - **Ack**: only after the last step is saved and the turn row says `DONE` with the answer does the worker delete the message.
 - **Dead worker**: no ack, the lease runs out, the message is visible again; the next worker receives it, finds the saved steps, and resumes from the last one, so the model is asked only for what comes next.
-- **DLQ** (dead-letter queue): after N receives the message goes to a dead-letter queue instead of looping forever. Out of scope for the POC.
-- **The stream back to the client**: the worker pushes each step and each piece of the answer to the run's stream as they happen; the API node holding the connection forwards it as Server-Sent Events (SSE), so it does not care which worker is on the turn. The store is read only if the stream is gone: the saved rows, once.
-- **The call in flight**: a worker that dies after a tool did its work and before the row landed leaves one call that runs twice; every call carries a key, and a tool that writes ignores the repeat. In v2 the key is the job id plus the deciding step, so two calls of one batch share it; a production key adds the call's position in the batch.
+- **DLQ** (dead-letter queue): after N receives the message goes to a dead-letter queue instead of looping forever.
+- **The stream back to the client**: the worker pushes each step and each piece of the answer to the run's stream as they happen. The API node holding the client's connection forwards the stream as Server-Sent Events (SSE), so it does not care which worker is on the turn. If the stream is gone, the API sends the saved rows instead, once.
+- **The call in flight**: a worker that dies after a tool did its work and before the row landed leaves one call that runs twice. Every call carries a key, and a tool that writes ignores the repeat. In v2 the key is the job id plus the step of the model call that asked for the tool, so two calls from one batch share one key. Production needs one more part in the key: the call's position in the batch.
 
 | table | columns | what it is for |
 | --- | --- | --- |
@@ -50,10 +50,9 @@ What the queue promises, and what it cannot, on one turn.
 | a tool that writes | no double effect | it is idempotent on the key the harness gives it, job id plus step |
 | the whole turn | finishes, or is handed to the next worker | ack only after the last step is saved; no ack, the lease runs out |
 
-- Window A, the worker dies after a step is saved: the next worker continues after that step. Nothing runs twice, the model is not asked again.
-- Window B, the worker dies after the tool ran but before its result was saved: the next worker runs the tool again. The key makes a writing tool a no-op; a read just repeats.
+- In the diagram, window A is a death after a step is saved: the table's first two rows. Window B is a death after the tool ran but before its row was saved: the next two rows; a read that repeats there is harmless.
 - So the queue is at-least-once, and the tools carry the rest. That is good enough for production; it is what I ran.
-- Temporal keeps this bookkeeping for you: a completed step is in its history and never re-runs, and retries and timers are its. The side effect inside a step is still at least once, so it still asks for idempotent activities. The contract is the same; what you buy is that the bookkeeping is no longer yours to get right.
+- Temporal does not change this contract. A completed step is in its history and never re-runs, but the side effect inside a step is still at least once, so activities must still be idempotent. What you buy is that the bookkeeping is no longer yours to get right.
 
 ## The choices
 
@@ -71,7 +70,7 @@ The queue is what I ran: the simplest thing that worked at that scale, and the l
 - The next version put an SQS-style queue with a visibility timeout in front of the loop: the worker extends it while the run is live, acks only after the step is persisted, a dead worker's message becomes visible again and another pod picks it up, repeated failures go to the DLQ. The scaling lever became queue depth, not request count.
 - Resume is an opt-in log of completed tool calls per conversation: the new pod rebuilds the context from it and the model continues.
 - The contract: completed tool calls run once, the one in-flight call at least once, so tool writes are idempotent by key. If that is ever not enough, the fix is a started-marker before the call and a check on resume.
-- We never evaluated Temporal; with hindsight durability was the real hard problem, and I would put a durable-execution engine under the loop.
+- With hindsight durability was the real hard problem; the Temporal pick is in The choices above.
 
 ## The implementation
 
@@ -101,7 +100,7 @@ public void ack(String turnId) {                                          // the
 One `UPDATE` both finds the oldest visible message and hides it, so two workers asking at the same moment cannot both get it; `extend` and `ack` are one statement each. The database plumbing around each statement is left out here; `RunQueue.java` has it.
 </details>
 
-The worker is the loop around those calls, `Worker.once`: receive, claim the row (`RUNNING`, its pid, attempts + 1), load the saved rows, `start` when there are none and `resume` when there are, ack last. The store says whether a worker died on this turn, so resuming is the normal path, not a special one. The listener runs after each row is in the store, so the lease moves with the saved work; the ack comes last.
+The worker is the loop around those calls, `Worker.once`: receive, claim the row, load the saved rows, `start` when there are none and `resume` when there are, ack last. The store says whether a worker died on this turn, so resuming is the normal path, not a special one. The worker's listener on the loop runs after each row is in the store and extends the lease there, so the lease moves with the saved work.
 
 ## Proof
 

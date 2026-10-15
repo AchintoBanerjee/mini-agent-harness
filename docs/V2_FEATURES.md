@@ -2,25 +2,25 @@
 
 [The context is the memory](#the-context-is-the-memory) · [Parallel tool calls](#parallel-tool-calls) · [A clock on every tool call](#a-clock-on-every-tool-call) · [The agent's tool list is the gate](#the-agents-tool-list-is-the-gate) · [The pass cap and the budget](#the-pass-cap-and-the-budget) · [Chaining across passes](#chaining-across-passes) · [The answer](#the-answer)
 
-What the loop already does beyond the HLD picture, before the deep dives. Each one: what it does, a real run, where it lives. Every output below is pasted from `demo-output.txt`, which `./demo.sh` writes.
+What the loop already does that the HLD page does not show, before the deep-dive pages. Each feature gets three parts: what it does, a real run, and where it lives in the code. Every output below is pasted from `demo-output.txt`, which `./demo.sh` writes.
 
 | Feature | In v2 | The proof |
 |---|---|---|
-| the context is the memory | built: every pass the model gets the question plus every row of the turn so far; the rows are in the store before the next pass, so a resumed worker loads them and sees the same | every turn; the durability demo for the rebuild |
+| the context is the memory | built: the question plus every row of the turn so far, rebuilt every pass and saved before the next, so a resumed worker sees the same | every turn; the durability demo for the rebuild |
 | parallel tool calls | built: two tools in one reply run together, rows in request order, a note row says wall against work | the demo's `--slow` section |
 | a clock on every tool call | built: the agent's `toolTimeoutMs`, the call is cut off, the answer names it | the chaos stream in the demo |
 | the agent's tool list is the gate | built: a tool the model names outside the list is `DENIED` without running, the loop moves on | `OrchestratorTest` |
 | the pass cap and the budget | built: `maxPasses` per agent, `maxModelCalls` shared down a sub-agent tree, the depth cap | `OrchestratorTest`, `SubAgentTest`, the loop agent in the demo |
-| chaining across passes | built: after pass 1 the stub reads the results and asks for what they name; the status question is a three-pass chain, and a dead worker's successor continues it | the first turn of the demo; the durability section |
-| the answer | built: every tool result of the turn relayed, one per line, failures named; a model's final reply replaces it | every turn in the demo |
+| chaining across passes | built: after pass 1 the stub reads the results and asks for what they name, a three-pass chain for the status question that a dead worker's successor continues | the first turn of the demo; the durability section |
+| the answer | built: every tool result of the turn relayed, one per line, failures named, the stand-in for a model's final reply | every turn in the demo |
 
 ## The context is the memory
 
 - The model keeps nothing between calls. Every pass, the loop builds the context again: the question, and every row of this turn so far, what was decided and what each tool returned. That is the memory inside a turn, and it is the rows.
 - The rows live in the store before the next pass is taken, so a worker that resumes loads them and builds the same context the dead one had. The chain goes on from the last saved row; the first lookup does not run again.
-- The rows only ever grow at the end. That is what lets the model server reuse what it already read, the prefix cache on the performance page.
+- The rows only ever grow at the end. That is what would let a real model server, once one is behind the interface, reuse what it already read: the prefix cache, on the performance page.
 
-What pass 2 sees for the status question: the question again, row 1 (the decision) and row 2 (the result). The stub reads row 2, finds SHP-1 and asks for `shipping_status`; a real model does the same from the text. That is the chain.
+What pass 2 sees for the status question, "What is the status of order ORD-1?": the question again, row 1 (the decision) and row 2 (the result). The stub reads row 2, finds SHP-1 and asks for `shipping_status`; a real model does the same from the text. That is a chain across passes; it has its own section below.
 
 ```
 question: What is the status of order ORD-1?
@@ -141,8 +141,9 @@ Where: `ToolCaller.run`, the first two checks. The test `aModelThatNamesAToolOut
 
 ## The pass cap and the budget
 
-- `maxPasses` per agent caps the loop. A model that never says done is stopped at the cap, the last row is a note, "cut short at maxPasses=2", status `CUT_SHORT`, and the turn ends `DONE` with what it has.
-- `maxModelCalls` per agent, default 20, is one budget of model calls for the whole turn, parent and child loops together. Exhausted, the turn ends `FAILED` with a note row, "budget exhausted: 3 model calls for this turn". The cap is on the loop, not in a prompt.
+- `maxPasses` per agent caps the loop. A model that never says done is stopped at the cap. The last row is then a note with status `CUT_SHORT`, "cut short at maxPasses=2", and the turn ends `DONE` with what it has.
+- `maxModelCalls` per agent, default 20, is one budget of model calls for the whole turn, parent and child loops together. When it runs out, the turn ends `FAILED` with a note row, "budget exhausted: 3 model calls for this turn".
+- Both caps are enforced by the loop's code, not asked of the model in a prompt.
 - The depth cap: a child loop at depth 2 cannot delegate again. An agent that lists itself as a tool stops there with an error row instead of a stack overflow:
 
 ```
@@ -156,11 +157,12 @@ Where: `Orchestrator.loop` for the cap and the budget, `TurnBudget`, `Orchestrat
 
 ## Chaining across passes
 
-- A chain is inside one turn: pass 2 asks for a tool because of what pass 1 returned. Pass N's tool result is in the context the model sees in pass N+1, so a model that needs a second lookup asks for it next, and so on until it says done. Resume works in the middle of a chain, because every pass is rows in the store.
+- A chain is inside one turn: pass 2 asks for a tool because of what pass 1 returned. Pass N's tool result is in the context the model sees in pass N+1, so a model that needs a second lookup asks for it next, and so on until it says done.
 - The stub does it with one rule:
-  - Pass 1 reads the question: every tool whose keywords and id pattern fit is called, one as a single call, several as one batch run together.
-  - Later passes read the results: every OK row is scanned for the ids each id-taking tool knows, and each tool and id that has no call row yet is called. A row that is a reference or a failure is not read.
-  - Done when nothing new is named. That is what a model does when a result names something it can look up.
+  - Pass 1 reads the question. Every tool whose keywords and id pattern fit the question is called: one match is a single call, several are one batch, run together.
+  - Later passes read the results. Every OK row is scanned for ids of the kind each id-taking tool accepts, and each tool-and-id pair that has no call row yet is called.
+  - A failed row is not read. Neither is a repeated call's row, whose text only points at the earlier step.
+  - The stub says done when nothing new is named. That is what a real model does when a result names something it can look up.
 
 The status question, from the worker's log: pass 1 asks for the order, pass 2 asks for the shipment the order named, pass 3 says done:
 
@@ -191,7 +193,11 @@ Where: `RuleBasedLLM.next` for the rule, `Orchestrator.loop` and `Orchestrator.c
 
 ## The answer
 
-- What v2 does: every tool result of the turn, relayed unchanged, one per line in the order they ran, each once. A repeated call is swapped for the output of the step it repeats. A tool that did not end OK is named with its status, so the failure reaches the user. A child agent's own rows stay inside its answer. No tool ran: "No tool for this question."
+- The answer in v2 is a relay: every tool result of the turn, unchanged, one per line, in the order the calls ran, each row once.
+- A repeated call shows the output of the step it repeats.
+- A tool that did not end OK is named with its status, so the failure reaches the user.
+- A child agent's rows are not listed one by one; its single line is the child's answer.
+- When no tool ran, the answer is "No tool for this question."
 
 | The turn | The answer |
 |---|---|

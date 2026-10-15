@@ -6,7 +6,11 @@ The harness from the live round (`../v1`, frozen) extended in place, with HTTP a
 - `POST /runs` writes the turn row and its queue message and answers with the id at once.
 - A `worker` process runs the loop. It writes every span to `harness.db` (SQLite) before acting on it, and pushes every step and every piece of the answer to the server, which holds the run's stream; `GET /turns/{id}/events` forwards that stream from the last id the client saw.
 - A worker that dies loses its lease, and the next worker resumes the turn from its last saved span.
-- A runaway tool is cut off at the agent's timeout; independent tool calls run together; a repeated call inside a conversation is deduped; an agent can be a tool, its loop run inside the tool call with its rows nested in the same turn; a golden set scores the harness itself.
+- A runaway tool is cut off at the agent's timeout.
+- Independent tool calls run together.
+- A call repeated inside a conversation is deduped.
+- An agent can be a tool: its loop runs inside the tool call and its rows nest in the same turn.
+- A golden set scores the harness itself.
 - The model is a stub (`RuleBasedLLM`): no network, no keys.
 - The pages: `../docs/V2_HLD.md` (the design), `../docs/DURABILITY.md` (the queue, the lease, the dead worker), `../docs/SUBAGENTS.md` (an agent as a tool), `../DESIGN.md` (the write-up that ties them together).
 
@@ -156,9 +160,9 @@ $ curl -s http://localhost:62588/turns/r-fda1
 }
 ```
 
-The LLM span's `attrs` carry the decided call, so a resume never asks the model for it again;
-the TOOL span's `key` is the turn id plus the span that decided it, the idempotency key a tool
-that writes would use.
+The LLM span's `attrs` carry the decided call, so a resume never asks the model for it again.
+The TOOL span's `key` is the turn id plus the number of the span that decided it. A tool that
+writes would use `key` as its idempotency key.
 
 ### the stream: every step and every piece of the answer as it happens, then `done`; a reconnect gets only the tail
 
@@ -285,15 +289,20 @@ event: done
 data: {"turnId":"r-fda1","status":"DONE","answer":"Order ORD-1: SHIPPED, shipment SHP-1\nShipment SHP-1: IN TRANSIT, arriving 2026-10-16"}
 ```
 
-The loop is the producer. The worker pushes each event to the server as the loop raises it
-(`POST /turns/{id}/events`: a `step` with its span, a `token` with a piece of the answer as the
-model produces it, `done`); the server holds the run's stream in memory (`RunStreams`: in
-production a Redis Stream per job id, so any API node can read it; here a map in the server's
-process); the client reads it from the last id it saw, so a reconnect gets only the tail. The
-store is read only when the stream is gone (60 s after `done`, after a server restart, or when
-no worker fed it): then the saved rows go out once, the span number as the id, then `done`. A
-client that disconnects does not stop the turn. Opened right after a `POST` on `chaos`, it held
-the response for the 1000 ms the hanging tool took to be cut off (`TIMEOUT`, in `demo-output.txt`).
+The loop is the producer. As it raises each event, the worker pushes it to the server with
+`POST /turns/{id}/events`. There are three events: `step` with its span, `token` with a piece of
+the answer as the model produces it, and `done`.
+
+The server holds the run's stream in memory: `RunStreams`, a map in the server's process. In
+production this would be a Redis Stream per job id, so any API node can read it; here it is
+the map. The client reads the stream from the last id it saw, so a reconnect gets only the tail.
+
+The store is read only when the stream is gone: 60 s after `done`, after a server restart, or
+when no worker fed it. Then the saved rows go out once, the span number as the id, then `done`.
+
+A client that disconnects does not stop the turn. A stream opened right after a `POST /runs` on
+the `chaos` agent, whose tool hangs, held the response for the 1000 ms the hanging tool took to
+be cut off (`TIMEOUT`, in `demo-output.txt`).
 
 ### a follow-up turn in the same conversation: the repeated call is not run again
 
@@ -344,10 +353,9 @@ gets `DENIED` without running.
 
 ### two tools in one pass run together: a worker started with `--slow`
 
-The worker runs the tools, so the simulated latency is its flag: `--slow` gives every `lookup`
-300 ms and every token 40 ms. Two lookups in one pass take one sleep of wall time, not two, and
-their spans land in request order with their own `ms`; a stream opened before the worker starts
-shows the answer arriving word by word (`demo-output.txt`).
+`--slow` is a worker flag because the worker runs the tools. The spans of the two lookups land
+in request order, each with its own `ms`. A stream opened before the worker starts shows the
+answer arriving word by word (`demo-output.txt`).
 
 ```
 $ curl -s -X POST http://localhost:62588/runs -d '{"agent":"support","question":"Status of order ORD-2 and is product PRD-1 available?"}'
@@ -375,10 +383,10 @@ done r-ab46 · 5 spans · 804 ms · DONE in harness.db · acked · handler calls
 ### an agent as a tool: the concierge hands the shipment question to the logistics agent
 
 A tool of type `agent` names another agent. Its call runs that agent's own loop, the same
-`Orchestrator` class, inside the tool call: the goal is the child's question, the child's tools
-are its own agent's, its rows go into the same turn with `parent` (the span that delegated) and
-`depth` in `attrs`, and only its answer comes back, as the parent's `AGENT` row. The depth is
-capped at 2 and one budget of model calls (`maxModelCalls` on the agent file, default 20) is
+`Orchestrator` class, inside the tool call. The goal is the child's question. The child's tools
+are its own agent's. The child's rows go into the same turn, with `parent` (the span that
+delegated) and `depth` in `attrs`. Only the child's answer comes back, as the parent's `AGENT`
+row. The depth is capped at 2. One budget of model calls, `maxModelCalls` on the agent file, is
 shared by parent and children. The whole section is `../docs/SUBAGENTS.md`.
 
 ```
@@ -467,11 +475,9 @@ Shipment SHP-1: IN TRANSIT, arriving 2026-10-16
 done r-26e4 · 6 spans · 114 ms · DONE in harness.db · acked · handler calls: shipping_status=1
 ```
 
-The second worker's footer says `handler calls: shipping_status=1`: the saved `order_status`
-call did not run again; the model was asked from pass 2 on, read SHP-1 in the saved result and
-continued the chain. `GET /turns/r-26e4` after that shows `DONE`, `attempts 2`, the second
-worker's pid in `claimedBy` and all six spans (`demo-output.txt`). A dead-letter queue after N
-receives is out of scope for this POC.
+`GET /turns/r-26e4` after that shows `DONE`, `attempts 2`, the second worker's pid in
+`claimedBy` and all six spans (`demo-output.txt`). A dead-letter queue after N receives is out
+of scope for this POC.
 
 ### eval over HTTP: `POST /evals`, two FAILs left in on purpose
 
@@ -535,24 +541,32 @@ $ java --enable-native-access=ALL-UNNAMED -cp "target/classes:target/lib/*" harn
 
 ## Agents and tools are data
 
-An agent is a file in `agents/`: its name, the tools it may call, its pass cap, its per-call
-timeout and, if it says so, `maxModelCalls` (default 20), the model calls one turn may spend,
-children included. A tool the model names outside the list is `DENIED` before it runs. The stub only ever
-names an agent's own tools, so the demo cannot show that row; the proof is
-`aModelThatNamesAToolOutsideTheAgentsListIsDeniedAndTheLoopMovesOn` in `OrchestratorTest`.
-`refund_order` is registered and listed by no agent for exactly that case. A builder that writes such files
-would be its own service in front of this metadata; there is no endpoint for it here.
+An agent is a file in `agents/`. It names the agent, the tools it may call, its pass cap and
+its per-call timeout. It may also set `maxModelCalls`, the model calls one turn may spend,
+children included; the default is 20.
+
+A tool the model names outside the agent's list is `DENIED` before it runs. The stub never names
+a tool outside the list, so the demo cannot show that row. The proof is
+`aModelThatNamesAToolOutsideTheAgentsListIsDeniedAndTheLoopMovesOn` in `OrchestratorTest`;
+`refund_order` is registered but listed by no agent so that this test has a tool to deny.
+
+A builder that writes these files would be its own service in front of this metadata. There is
+no endpoint for it here.
 
 ```json
 { "name": "support", "description": "Answers order, shipment and stock questions",
   "tools": ["order_status", "shipping_status", "stock_status"], "maxPasses": 5, "toolTimeoutMs": 2000 }
 ```
 
-A tool is a file in `tools/`; `type` picks the adapter in `ToolLoader` (`lookup`: a static map
-keyed by the id the question mentions; `sleep`: an interruptible sleep of `ms`; `fail`: throws
-`message`; `agent`: another agent, named by `agent` and read from `agents/`, run as a tool by
-the loop that offers it, with the whole question as its `goal`). Adding a tool is adding a file;
-the `match` block is what the stub model uses to pick it.
+A tool is a file in `tools/`. Its `type` picks the adapter in `ToolLoader`:
+
+- `lookup`: a static map keyed by the id the question mentions.
+- `sleep`: an interruptible sleep of `ms`.
+- `fail`: throws `message`.
+- `agent`: another agent, named by `agent` and read from `agents/`; the loop that offers it runs
+  that agent as a tool with the whole question as its `goal`.
+
+Adding a tool is adding a file. The `match` block is what the stub model uses to pick it.
 
 ```json
 { "name": "order_status", "description": "Status of an order, by order id", "type": "lookup",
