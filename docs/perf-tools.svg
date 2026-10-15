@@ -11,7 +11,7 @@
 <text class="m" x="95" y="105" text-anchor="middle">mis-picks among look-alikes</text>
 
 <rect class="b" x="200" y="40" width="900" height="52"/>
-<text class="h" x="215" y="61">Model</text>
+<text class="h" x="215" y="61">Model, behind the LLM proxy</text>
 <text class="m" x="215" y="78">sees tools[] + messages · returns one tool call, or the answer</text>
 <text class="m" x="1085" y="78" text-anchor="end">tools[] = search_tools + 3 to 5 pinned + what was found so far · never the 300</text>
 
