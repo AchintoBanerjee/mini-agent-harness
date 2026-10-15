@@ -16,18 +16,19 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.function.Consumer;
 import java.util.function.Supplier;
 
 /**
  * Owns the loop. Each question is a Turn (its id the job id): ask the model, run the tool
  * or tools it names (several in one reply run together, rows in request order), record
- * each as a span, repeat until the model says Done, then summarize. The agent's maxPasses
- * caps the loop; hitting the cap leaves a NOTE row instead of a silent stop. Every row is
- * written to the store before the loop acts on it: the LLM row before the tools run, the
- * TOOL rows before the model is asked again. The LLM row's attrs carry the decided calls,
- * so a turn that died between two rows resumes from the store without asking the model
- * again for that decision. Several turns form one conversation: the model sees the earlier
- * turns as Q/A lines, and a call whose tool and input already ran OK anywhere in the
+ * each as a span, repeat until the model says Done, then the model's final reply, streamed.
+ * The agent's maxPasses caps the loop; hitting the cap leaves a NOTE row instead of a silent
+ * stop. Every row is written to the store before the loop acts on it: the LLM row before the
+ * tools run, the TOOL rows before the model is asked again. The LLM row's attrs carry the
+ * decided calls, so a turn that died between two rows resumes from the store without asking
+ * the model again for that decision. Several turns form one conversation: the model sees the
+ * earlier turns as Q/A lines, and a call whose tool and input already ran OK anywhere in the
  * conversation is not run again but recorded as DEDUPED, pointing at the span it repeats.
  * The turn row follows the loop: RUNNING while it runs, DONE with the answer when it ends,
  * FAILED if it threw.
@@ -58,7 +59,6 @@ public class Orchestrator {
     private final List<Tool> tools = new ArrayList<>();
     private final LLMProxy llm;
     private final ToolCaller toolCaller;
-    private final Summarizer summarizer;
     private final RunStore store;
     private final RunListener listener;
     private final int depth;
@@ -68,15 +68,14 @@ public class Orchestrator {
     private int lastSpan;
 
     /** In-memory store and no listener: for tests and embedding. */
-    public Orchestrator(Agent agent, ToolRegistry registry, LLMProxy llm,
-                        ToolCaller toolCaller, Summarizer summarizer) {
-        this(agent, registry, llm, toolCaller, summarizer, new InMemoryRunStore(), span -> { });
+    public Orchestrator(Agent agent, ToolRegistry registry, LLMProxy llm, ToolCaller toolCaller) {
+        this(agent, registry, llm, toolCaller, new InMemoryRunStore(), span -> { });
     }
 
     /** The turn's own loop: depth 0, a fresh budget of the agent's maxModelCalls. */
     public Orchestrator(Agent agent, ToolRegistry registry, LLMProxy llm, ToolCaller toolCaller,
-                        Summarizer summarizer, RunStore store, RunListener listener) {
-        this(agent, registry, llm, toolCaller, summarizer, store, listener, 0, 0, new TurnBudget(agent.maxModelCalls()));
+                        RunStore store, RunListener listener) {
+        this(agent, registry, llm, toolCaller, store, listener, 0, 0, new TurnBudget(agent.maxModelCalls()));
     }
 
     /**
@@ -84,7 +83,7 @@ public class Orchestrator {
      * the parent that delegated, and the parent's budget. An agent tool in the agent's list is
      * bound to this loop, and the caller runs the bound copy.
      */
-    public Orchestrator(Agent agent, ToolRegistry registry, LLMProxy llm, ToolCaller toolCaller, Summarizer summarizer,
+    public Orchestrator(Agent agent, ToolRegistry registry, LLMProxy llm, ToolCaller toolCaller,
                         RunStore store, RunListener listener, int depth, int parentSpan, TurnBudget budget) {
         for (String name : agent.toolNames()) {
             Tool tool = registry.require(name);
@@ -95,7 +94,6 @@ public class Orchestrator {
         this.registry = registry;
         this.llm = llm;
         this.toolCaller = toolCaller;
-        this.summarizer = summarizer;
         this.store = store;
         this.listener = listener;
         this.depth = depth;
@@ -168,7 +166,7 @@ public class Orchestrator {
         }
         Turn turn = conversation.turns().getLast();
         ToolCaller childCaller = new ToolCaller(registry, child.toolNames(), Duration.ofMillis(child.toolTimeoutMs()));
-        Orchestrator childLoop = new Orchestrator(child, registry, llm, childCaller, summarizer, store, listener,
+        Orchestrator childLoop = new Orchestrator(child, registry, llm, childCaller, store, listener,
                 depth + 1, lastSpan, budget);
         return childLoop.asChild(conversation.id(), turn.id(), goal);
     }
@@ -198,7 +196,11 @@ public class Orchestrator {
         return conversation.turns().getLast();
     }
 
-    /** The turn row follows the work: RUNNING while it runs, DONE with the answer at the end, FAILED if it threw. */
+    /**
+     * The turn row follows the work: RUNNING while it runs, DONE with the answer at the end,
+     * FAILED if it threw. The listener hears the end right after the row says it; only the
+     * turn's own loop comes through here, so a child loop never announces an end.
+     */
     private String tracked(Turn turn, Supplier<String> work) {
         store.setStatus(turn.id(), TurnRow.Status.RUNNING);
         String answer;
@@ -206,9 +208,11 @@ public class Orchestrator {
             answer = work.get();
         } catch (RuntimeException | Error thrown) {
             store.setStatus(turn.id(), TurnRow.Status.FAILED);
+            listener.done(turn.id(), TurnRow.Status.FAILED, null);
             throw thrown;
         }
         store.done(turn.id(), answer);
+        listener.done(turn.id(), TurnRow.Status.DONE, answer);
         return answer;
     }
 
@@ -378,8 +382,14 @@ public class Orchestrator {
         listener.on(span);
     }
 
+    /**
+     * The model's final reply, streamed: each piece goes to the listener as the model produces
+     * it. A child loop's answer is a tool result for its parent, not text the user sees, so a
+     * child streams nothing.
+     */
     private String finish(Turn turn) {
-        String answer = summarizer.summarize(turn);
+        Consumer<String> out = depth == 0 ? piece -> listener.token(turn.id(), piece) : piece -> { };
+        String answer = llm.answer(turn, out);
         turn.setAnswer(answer);
         return answer;
     }

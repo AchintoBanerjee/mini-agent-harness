@@ -3,9 +3,10 @@
 The harness from the live round (`../v1`, frozen) extended in place, with HTTP as its face.
 A question is a turn (its id is the job id) in a conversation; `POST /runs` writes the turn
 row and its queue message and answers with the id at once; a `worker` process runs the loop,
-writing every span to `harness.db` (SQLite) before acting on it; `GET /turns/{id}/events`
-streams the spans back as they land. A worker that dies loses its lease and the next worker
-resumes the turn from its last saved span. A runaway tool is cut off at the agent's timeout,
+writing every span to `harness.db` (SQLite) before acting on it and pushing every step and
+every piece of the answer to the server, which holds the run's stream; `GET /turns/{id}/events`
+forwards that stream from the last id the client saw. A worker that dies loses its lease and
+the next worker resumes the turn from its last saved span. A runaway tool is cut off at the agent's timeout,
 independent tool calls run together, a repeated call inside a conversation is deduped, an
 agent can be a tool (its loop runs inside the tool call, its rows nested in the same turn),
 and a golden set scores the harness itself. The model is a stub (`RuleBasedLLM`): no network,
@@ -17,7 +18,7 @@ write-up is `../DESIGN.md`.
 
 ```
 cd v2
-mvn -q test       # 102 tests, about 10 s with Maven's own start; tests use the in-memory store or a temp SQLite file
+mvn -q test       # 113 tests, about 10 s with Maven's own start; tests use the in-memory store or a temp SQLite file
 mvn -q compile    # classes to target/classes, Jackson and sqlite-jdbc (the two dependencies) to target/lib
 ```
 
@@ -33,12 +34,14 @@ plus 4 hex), ports, pids and milliseconds vary from run to run; nothing else doe
 
 ```
 java -cp "target/classes:target/lib/*" harness.cli.Main serve [--port 8080]
-java -cp "target/classes:target/lib/*" harness.cli.Main worker [--once] [--visibility-ms 2000] [--crash-after N] [--slow]
+java -cp "target/classes:target/lib/*" harness.cli.Main worker [--once] [--visibility-ms 2000] [--crash-after N] [--slow] [--api http://localhost:8080]
 ```
 
 `serve` is the JDK's own `HttpServer` on localhost (`--port 0` picks a free one); it runs no
-loop. `worker` takes turns off the queue in `harness.db` and runs them. The demo starts one of
-each in the background:
+loop. `worker` takes turns off the queue in `harness.db` and runs them; `--api` is the server
+it pushes each event of a turn to (default `http://localhost:8080`), `--slow` gives every
+lookup 300 ms and every token 40 ms of simulated latency. The demo starts one of each in the
+background:
 
 ```
 $ java --enable-native-access=ALL-UNNAMED -cp "target/classes:target/lib/*" harness.cli.Main serve --port 0
@@ -54,7 +57,8 @@ worker pid 31582 · lease 2000 ms · polling every 500 ms, ctrl-c stops it · ha
 | GET | `/tools` | the tool files | `200`, a list |
 | POST | `/runs` | `{"agent","question"}`: a new conversation and its first turn, QUEUED; `{"conversationId","question"}`: the next turn of that conversation | `202 {"turnId","jobId","conversationId","status"}`; `400` |
 | GET | `/turns/{id}` (or `/runs/{id}`) | the turn row (status, `claimedBy`, `attempts`, the answer when DONE) and its spans | `200`; `404` |
-| GET | `/turns/{id}/events` | SSE: the stored spans from `Last-Event-ID` or `?after=N`, then live, then `done` | `200 text/event-stream`; `404` |
+| POST | `/turns/{id}/events` | the worker's push: `{"event":"step"|"token"|"done","data":{...}}`, appended to the run's stream the server holds | `204`; `404`; `400` |
+| GET | `/turns/{id}/events` | SSE: the run's stream from `Last-Event-ID` or `?after=N`: each `step`, each `token`, then `done`; the saved rows once when the stream is gone | `200 text/event-stream`; `404` |
 | POST | `/evals` | runs `evals/golden.json` in the server, every case on its own in-memory store | `200`, the table as `cases` and as `lines` |
 
 JSON in and out, one virtual thread per request, errors as `{"error": "..."}`. `jobId` repeats
@@ -131,7 +135,7 @@ The LLM span's `attrs` carry the decided call, so a resume never asks the model 
 the TOOL span's `key` is the turn id plus the span that decided it, the idempotency key a tool
 that writes would use.
 
-### the stream: every span as it lands, then `done`; a reconnect gets only the tail
+### the stream: every step and every piece of the answer as it happens, then `done`; a reconnect gets only the tail
 
 ```
 $ curl -sN --max-time 5 http://localhost:58833/turns/r-478b/events
@@ -160,10 +164,15 @@ event: done
 data: {"turnId":"r-478b","status":"DONE","answer":"Order ORD-1: SHIPPED, shipment SHP-1"}
 ```
 
-The stream reads the rows from the file every 200 ms, so it does not care which worker wrote
-them, and a client that disconnects does not stop the turn. Opened right after a `POST` on
-`chaos`, it held the response for the 1000 ms the hanging tool took to be cut off
-(`TIMEOUT`, in `demo-output.txt`).
+The loop is the producer. The worker pushes each event to the server as the loop raises it
+(`POST /turns/{id}/events`: a `step` with its span, a `token` with a piece of the answer as the
+model produces it, `done`); the server holds the run's stream in memory (`RunStreams`: in
+production a Redis Stream per job id, so any API node can read it; here a map in the server's
+process); the client reads it from the last id it saw, so a reconnect gets only the tail. The
+store is read only when the stream is gone (60 s after `done`, after a server restart, or when
+no worker fed it): then the saved rows go out once, the span number as the id, then `done`. A
+client that disconnects does not stop the turn. Opened right after a `POST` on `chaos`, it held
+the response for the 1000 ms the hanging tool took to be cut off (`TIMEOUT`, in `demo-output.txt`).
 
 ### a follow-up turn in the same conversation: the repeated call is not run again
 
@@ -211,8 +220,9 @@ not list gets `DENIED` without running.
 ### two tools in one pass run together: a worker started with `--slow`
 
 The worker runs the tools, so the simulated latency is its flag: `--slow` gives every `lookup`
-300 ms. Two lookups in one pass take one sleep of wall time, not two, and their spans land in
-request order with their own `ms`.
+300 ms and every token 40 ms. Two lookups in one pass take one sleep of wall time, not two, and
+their spans land in request order with their own `ms`; a stream opened before the worker starts
+shows the answer arriving word by word (`demo-output.txt`).
 
 ```
 $ curl -s -X POST http://localhost:58833/runs -d '{"agent":"support","question":"Status of order ORD-2 and is product PRD-1 available?"}'
@@ -433,18 +443,20 @@ queue. A file from before these tables (`job`, `step`) is refused with a message
 ```
 agents/*.json  tools/*.json  evals/golden.json  harness.db (gitignored)
 src/main/java/harness/
-  core/    Orchestrator, TurnBudget, Conversation, Turn, Span, Context, Summarizer, RelaySummarizer, RunListener, ConsoleListener, CrashAfter
+  core/    Orchestrator, TurnBudget, Conversation, Turn, Span, Context, RelaySummarizer, RunListener, ConsoleListener, CrashAfter
   model/   LLMProxy, RuleBasedLLM, ModelReply, ToolCall, ToolCalls, Done
   tools/   Tool, ToolRegistry, ToolCaller, ToolResult, MatchingCondition, ToolLoader
   agent/   Agent, AgentLoader
   store/   RunStore, ConversationRow, TurnRow, SqliteRunStore, InMemoryRunStore, RunQueue
-  http/    HttpApi
-  worker/  Worker
+  http/    HttpApi, RunStreams
+  worker/  Worker, HttpPush
   eval/    GoldenCase, EvalRunner, CaseResult
   cli/     Main
 ```
 
 What is simulated is labelled as such: `--slow` prints `(latency simulated)`, `--crash-after`
 prints `(simulated)`, the model is a rule-based stub, and the timeout is a thread with a
-deadline, not a sandbox. The store, the queue and the HTTP server are real: one SQLite file, a
-table with SQS's three calls, the JDK's `HttpServer`; a worker's crash is a real `System.exit(3)`.
+deadline, not a sandbox. The run's stream is a map in the server's process, the stand-in for a
+Redis Stream per job id, and the worker's push over HTTP the stand-in for the append to it. The
+store, the queue and the HTTP server are real: one SQLite file, a table with SQS's three calls,
+the JDK's `HttpServer`; a worker's crash is a real `System.exit(3)`.

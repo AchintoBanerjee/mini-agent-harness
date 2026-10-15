@@ -21,7 +21,7 @@ A turn (job id) becomes a message on a queue, a worker runs it, and when the wor
 - **Ack**: only after the last step is saved and the turn row says `DONE` with the answer does the worker delete the message.
 - **Dead worker**: no ack, the lease runs out, the message is visible again; the next worker receives it, finds the saved steps, and resumes from the last one, so the model is asked only for what comes next.
 - **DLQ** (dead-letter queue): after N receives the message goes to a dead-letter queue instead of looping forever. Out of scope for the POC.
-- **Steps back to the client**: the API reads the steps from the store and streams them as Server-Sent Events (SSE), so it does not care which worker wrote them.
+- **The stream back to the client**: the worker pushes each step and each piece of the answer to the run's stream as they happen; the API node holding the connection forwards it as Server-Sent Events (SSE), so it does not care which worker is on the turn. The store is read only if the stream is gone: the saved rows, once.
 - **The call in flight**: a worker that dies after a tool did its work and before the row landed leaves one call that runs twice; every call carries a key (job id + deciding step), and a tool that writes ignores the repeat.
 
 | table | columns | what it is for |
@@ -75,7 +75,7 @@ I pick the queue: the simplest thing that works at the scale I ran, and the leas
 What runs here, said plainly:
 
 - One jar, two commands. `serve` is the API process; `worker` is the orchestrator process. Two JVM processes on one laptop, one SQLite file between them.
-- Not containers, not pods, no network between the two. A process exiting stands in for a pod dying, a second process for the next pod, the `queue` table for SQS, the file for the tenant database.
+- Not containers, not pods. A process exiting stands in for a pod dying, a second process for the next pod, the `queue` table for SQS, the file for the tenant database. The one network call between the two is the worker pushing the run's stream to the API over HTTP; the API holds that stream in memory, standing in for the Redis Stream.
 - One worker at a time on the file. More than one worker process at once is out of scope here: SQLite has one writer, and the three calls would move to SQS before a second worker is needed.
 - The queue is one table in the same file as the runs, and `RunQueue` is the three calls on it; swap the table for SQS and the three calls are the same.
 

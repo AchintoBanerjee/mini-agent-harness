@@ -18,6 +18,7 @@ import harness.tools.ToolRegistry;
 import harness.tools.ToolResult;
 import java.nio.file.Path;
 import java.util.List;
+import java.util.function.Consumer;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
@@ -85,8 +86,7 @@ class ResumeTest {
                 throw new Crash();
             }
         };
-        Orchestrator first = new Orchestrator(agent, registry, llm, new ToolCaller(registry),
-                new RelaySummarizer(), store, dieAfterRow2);
+        Orchestrator first = new Orchestrator(agent, registry, llm, new ToolCaller(registry), store, dieAfterRow2);
         assertThrows(Crash.class, () -> first.run(QUESTION));
         String runId = first.conversation().turns().getLast().id();
         assertEquals(List.of(Span.Kind.LLM, Span.Kind.TOOL), kinds(store.load(runId)));
@@ -107,8 +107,7 @@ class ResumeTest {
                 throw new Crash();
             }
         };
-        Orchestrator first = new Orchestrator(agent, registry, llm, new ToolCaller(registry),
-                new RelaySummarizer(), store, dieAfterRow4);
+        Orchestrator first = new Orchestrator(agent, registry, llm, new ToolCaller(registry), store, dieAfterRow4);
         assertEquals(ANSWER, first.run(QUESTION));
         assertThrows(Crash.class, () -> first.run("Is product PRD-1 available?"));
         String runId = first.conversation().turns().getLast().id();
@@ -152,7 +151,7 @@ class ResumeTest {
     }
 
     private Orchestrator orchestrator(ToolCaller toolCaller) {
-        return new Orchestrator(agent, registry, llm, toolCaller, new RelaySummarizer(), store, span -> { });
+        return new Orchestrator(agent, registry, llm, toolCaller, store, span -> { });
     }
 
     private static List<Span.Kind> kinds(List<Span> rows) {
@@ -200,6 +199,11 @@ class ResumeTest {
                 decisionAsks++;
             }
             return rules.next(context, tools);
+        }
+
+        @Override
+        public String answer(Turn turn, Consumer<String> out) {
+            return rules.answer(turn, out);
         }
     }
 }

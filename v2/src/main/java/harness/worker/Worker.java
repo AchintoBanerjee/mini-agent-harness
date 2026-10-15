@@ -5,7 +5,6 @@ import harness.agent.AgentLoader;
 import harness.core.ConsoleListener;
 import harness.core.CrashAfter;
 import harness.core.Orchestrator;
-import harness.core.RelaySummarizer;
 import harness.core.RunListener;
 import harness.core.Span;
 import harness.model.LLMProxy;
@@ -28,7 +27,9 @@ import java.util.Optional;
  * saved step instead of starting over. Every row the loop writes extends the lease, so a
  * live worker keeps its turn for as long as it takes, and a dead one loses it one
  * visibility window after its last row. crashAfter(N) is the simulated death: exit 3 right
- * after row N is persisted, no ack, the lease simply runs out.
+ * after row N is persisted, no ack, the lease simply runs out. Every event of the loop (a
+ * row, a piece of the answer, the end) also goes to the run's stream when stream(...) is set:
+ * the CLI sets an HttpPush to the API.
  */
 public class Worker {
 
@@ -45,6 +46,7 @@ public class Worker {
     private final long visibilityMs;
     private int crashAfter;
     private LLMProxy llm = new RuleBasedLLM();
+    private RunListener producer = span -> { };
     private long pollMs = POLL_MS;
     private volatile boolean stopped;
 
@@ -71,6 +73,11 @@ public class Worker {
     /** How long loop() waits when the queue is empty; tests shorten it. */
     public void pollMs(long pollMs) {
         this.pollMs = pollMs;
+    }
+
+    /** Where the loop's events go besides the store: the run's stream (HttpPush, or the API's producer in a test). Default: nowhere. */
+    public void stream(RunListener producer) {
+        this.producer = producer;
     }
 
     /** Until stop(): one message at a time, or a pause when the queue is empty. */
@@ -125,17 +132,46 @@ public class Worker {
         return true;
     }
 
-    /** The loop over this turn: the agent from the turn row, every written row extends the lease, then prints. */
+    /** The loop over this turn: the agent from the turn row, the listener below on every event. */
     private Orchestrator orchestrator(TurnRow turn) {
         Agent agent = agent(turn.agent());
         ToolRegistry registry = ToolLoader.load(toolsDir);
         ToolCaller toolCaller = new ToolCaller(registry, agent.toolNames(), Duration.ofMillis(agent.toolTimeoutMs()));
         RunListener print = crashAfter > 0 ? new CrashAfter(crashAfter, new ConsoleListener(), this::die) : new ConsoleListener();
-        RunListener listener = span -> {
-            queue.extend(turn.id(), visibilityMs);
+        return new Orchestrator(agent, registry, llm, toolCaller, store, new Forwarding(turn.id(), print));
+    }
+
+    /**
+     * The worker's listener on the loop. A row extends the lease, goes to the stream, then is
+     * printed, in that order: print may be the simulated crash, so the row reaches the stream
+     * before the worker dies. A piece of the answer and the end go to the stream.
+     */
+    private class Forwarding implements RunListener {
+
+        private final String turnId;
+        private final RunListener print;
+
+        Forwarding(String turnId, RunListener print) {
+            this.turnId = turnId;
+            this.print = print;
+        }
+
+        @Override
+        public void on(Span span) {
+            queue.extend(turnId, visibilityMs);
+            producer.on(span);
             print.on(span);
-        };
-        return new Orchestrator(agent, registry, llm, toolCaller, new RelaySummarizer(), store, listener);
+        }
+
+        @Override
+        public void token(String turnId, String text) {
+            producer.token(turnId, text);
+        }
+
+        @Override
+        public void done(String turnId, TurnRow.Status status, String answer) {
+            producer.done(turnId, status, answer);
+        }
     }
 
     /** The CLI's crash is the real thing: the process ends, nothing after the row happens. */

@@ -2,7 +2,6 @@ package harness.eval;
 
 import harness.agent.Agent;
 import harness.core.Orchestrator;
-import harness.core.RelaySummarizer;
 import harness.core.Span;
 import harness.model.RuleBasedLLM;
 import harness.store.InMemoryRunStore;
@@ -42,8 +41,7 @@ public class EvalRunner {
         Agent agent = agent(golden);
         InMemoryRunStore store = new InMemoryRunStore();
         ToolCaller toolCaller = new ToolCaller(registry, agent.toolNames(), Duration.ofMillis(agent.toolTimeoutMs()));
-        Orchestrator orchestrator = new Orchestrator(agent, registry, new RuleBasedLLM(), toolCaller,
-                new RelaySummarizer(), store, span -> { });
+        Orchestrator orchestrator = new Orchestrator(agent, registry, new RuleBasedLLM(), toolCaller, store, span -> { });
         long started = System.nanoTime();
         String answer = orchestrator.run(golden.question());
         long ms = Span.millisSince(started);

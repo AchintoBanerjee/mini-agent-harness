@@ -10,11 +10,10 @@ import java.util.List;
  * answer is that step's output. A tool that did not end OK is named with its status so the
  * failure reaches the user. No tool ran means no tool fit.
  */
-public class RelaySummarizer implements Summarizer {
+public class RelaySummarizer {
 
     public static final String NO_TOOL = "No tool for this question.";
 
-    @Override
     public String summarize(Turn turn) {
         List<String> outputs = new ArrayList<>();
         int pass = -1;

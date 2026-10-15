@@ -5,7 +5,10 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import harness.core.Context;
+import harness.core.RunListener;
 import harness.core.Span;
+import harness.core.Turn;
+import harness.http.HttpApi;
 import harness.model.LLMProxy;
 import harness.model.ModelReply;
 import harness.model.RuleBasedLLM;
@@ -14,9 +17,14 @@ import harness.store.SqliteRunStore;
 import harness.store.TurnRow;
 import harness.tools.Tool;
 import harness.tools.ToolLoader;
+import java.io.ByteArrayOutputStream;
+import java.io.PrintStream;
+import java.net.ServerSocket;
 import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.TimeUnit;
+import java.util.function.Consumer;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -25,7 +33,9 @@ import org.junit.jupiter.api.io.TempDir;
 /**
  * A dead worker, without a dead process (DyingWorker). The turn stays RUNNING, its lease
  * runs out, and the next worker over the same temp file receives it and resumes from the
- * saved rows.
+ * saved rows. And the worker's side of the run's stream: every event in order to whatever
+ * stream(...) is set to, and an HttpPush that cannot reach the API, or whose pushes the API
+ * turns away, never stops the loop.
  */
 class WorkerTest {
 
@@ -101,6 +111,93 @@ class WorkerTest {
         assertEquals(0, queue.size());
     }
 
+    @Test
+    void aWorkerWithAStreamSetPushesEveryRowThenEachPieceOfTheAnswerThenDoneInOrder() {
+        RunQueue queue = new RunQueue(store);
+        String id = queue.submit(store.newConversation("support"), QUESTION);
+        Worker worker = new Worker(AGENTS, TOOLS, store, queue, "worker-a", 300);
+        List<String> pushed = new ArrayList<>();
+        worker.stream(new RunListener() {
+            @Override
+            public void on(Span span) {
+                pushed.add("step " + span.span() + " " + span.kind());
+            }
+
+            @Override
+            public void token(String turnId, String text) {
+                pushed.add("token " + turnId + " " + text);
+            }
+
+            @Override
+            public void done(String turnId, TurnRow.Status status, String answer) {
+                pushed.add("done " + turnId + " " + status + " " + answer);
+            }
+        });
+
+        assertTrue(worker.once());
+
+        assertEquals(List.of("step 1 LLM", "step 2 TOOL", "step 3 LLM",
+                        "token " + id + " Order ", "token " + id + " ORD-1: ", "token " + id + " SHIPPED, ",
+                        "token " + id + " shipment ", "token " + id + " SHP-1",
+                        "done " + id + " DONE Order ORD-1: SHIPPED, shipment SHP-1"),
+                pushed, "the rows as they land, the answer as the model produces it, then the end");
+        assertEquals(TurnRow.Status.DONE, store.turn(id).status());
+    }
+
+    @Test
+    void anHttpPushAgainstAClosedPortSaysSoOnceAndTheTurnStillEndsDone() throws Exception {
+        int closedPort;
+        try (ServerSocket socket = new ServerSocket(0)) {
+            closedPort = socket.getLocalPort();
+        }
+        RunQueue queue = new RunQueue(store);
+        String id = queue.submit(store.newConversation("support"), QUESTION);
+        Worker worker = new Worker(AGENTS, TOOLS, store, queue, "worker-a", 300);
+        worker.stream(new HttpPush("http://localhost:" + closedPort));
+        ByteArrayOutputStream console = new ByteArrayOutputStream();
+        PrintStream stdout = System.out;
+        System.setOut(new PrintStream(console, true));
+        try {
+            assertTrue(worker.once(), "the push failed on every event and the loop never noticed");
+        } finally {
+            System.setOut(stdout);
+        }
+
+        assertEquals(TurnRow.Status.DONE, store.turn(id).status());
+        assertEquals("Order ORD-1: SHIPPED, shipment SHP-1", store.turn(id).answer());
+        assertEquals(0, queue.size(), "acked");
+        String printed = console.toString();
+        String warning = "stream: cannot reach http://localhost:" + closedPort + ", clients will read the saved rows";
+        assertEquals(1, printed.split(java.util.regex.Pattern.quote(warning), -1).length - 1, "said once, for nine events:\n" + printed);
+    }
+
+    @Test
+    void aPushTheApiTurnsAwayIsSaidOnceLikeAFailedOneAndTheTurnStillEndsDone() throws Exception {
+        SqliteRunStore other = new SqliteRunStore(dir.resolve("other.db"));
+        HttpApi api = new HttpApi(AGENTS, TOOLS, dir.resolve("golden.json"), other, new RunQueue(other));
+        api.start(0);
+        RunQueue queue = new RunQueue(store);
+        String id = queue.submit(store.newConversation("support"), QUESTION);
+        Worker worker = new Worker(AGENTS, TOOLS, store, queue, "worker-a", 300);
+        worker.stream(new HttpPush("http://localhost:" + api.port()));
+        ByteArrayOutputStream console = new ByteArrayOutputStream();
+        PrintStream stdout = System.out;
+        System.setOut(new PrintStream(console, true));
+        try {
+            assertTrue(worker.once(), "the API's store has no such turn, so every push came back 404, and the loop never noticed");
+        } finally {
+            System.setOut(stdout);
+            api.stop();
+            other.close();
+        }
+
+        assertEquals(TurnRow.Status.DONE, store.turn(id).status());
+        assertEquals(0, queue.size(), "acked");
+        String printed = console.toString();
+        String warning = "stream: cannot reach http://localhost:" + api.port() + ", clients will read the saved rows";
+        assertEquals(1, printed.split(java.util.regex.Pattern.quote(warning), -1).length - 1, "said once, for nine rejected pushes:\n" + printed);
+    }
+
     private static List<Span.Kind> kinds(List<Span> rows) {
         return rows.stream().map(Span::kind).toList();
     }
@@ -119,6 +216,11 @@ class WorkerTest {
                 decisionAsks++;
             }
             return rules.next(context, tools);
+        }
+
+        @Override
+        public String answer(Turn turn, Consumer<String> out) {
+            return rules.answer(turn, out);
         }
     }
 }

@@ -18,6 +18,7 @@ import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.function.Consumer;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
@@ -156,7 +157,7 @@ class DedupeTest {
     }
 
     private Orchestrator orchestrator(Agent agent, RunListener listener) {
-        return new Orchestrator(agent, registry, llm, new ToolCaller(registry), new RelaySummarizer(), store, listener);
+        return new Orchestrator(agent, registry, llm, new ToolCaller(registry), store, listener);
     }
 
     private static List<Span.Kind> kinds(List<Span> rows) {
@@ -181,6 +182,11 @@ class DedupeTest {
         public ModelReply next(Context context, List<Tool> tools) {
             seen.add(context);
             return rules.next(context, tools);
+        }
+
+        @Override
+        public String answer(Turn turn, Consumer<String> out) {
+            return rules.answer(turn, out);
         }
     }
 }

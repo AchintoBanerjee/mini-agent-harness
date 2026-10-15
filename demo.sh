@@ -71,12 +71,12 @@ if [ -z "$base" ]; then echo "the server did not start:"; cat "$server_log"; exi
 grep '^listening on' "$server_log"
 echo "(the server stays in the background; --port 0 picked a free port, the manual uses 8080)"
 worker_log=$(mktemp -t harness-worker)
-show worker
-$JAVA -cp "$CP" harness.cli.Main worker > "$worker_log" 2>&1 &
+show worker --api "$base"
+$JAVA -cp "$CP" harness.cli.Main worker --api "$base" > "$worker_log" 2>&1 &
 worker_pid=$!
 for _ in $(seq 1 50); do grep -q '^worker pid' "$worker_log" && break; sleep 0.1; done
 grep '^worker pid' "$worker_log"
-echo "(the worker stays in the background too: the server only queues turns, this process runs them)"
+echo "(the worker stays in the background too: the server only queues turns, this process runs them and pushes every event of a turn to the server, which holds the run's stream)"
 
 header "agents and tools: metadata files, read over GET /agents and GET /tools"
 curl_show -s "$base/agents"
@@ -92,12 +92,13 @@ echo "(202 came back at once with the turn QUEUED; the worker took it, and one s
 sleep 1
 curl_show -s "$base/turns/$turn_id"
 
-header "the stream: GET /turns/{id}/events sends every span with its number as the event id, then done; a reconnect with Last-Event-ID gets only the tail"
+header "the stream: GET /turns/{id}/events sends every step and every piece of the answer as it happens, then done; a reconnect with Last-Event-ID gets only the tail"
+echo "(the worker pushed each event to the server as the loop raised it; the server holds the run's stream and a client reads it from the last id it saw: the three steps, then the answer word by word, then done)"
 curl_show -sN --max-time 5 "$base/turns/$turn_id/events"
 echo "(a client that reconnects sends the last id it saw:)"
 curl_show -sN --max-time 5 -H 'Last-Event-ID: 2' "$base/turns/$turn_id/events"
 
-header "a live stream on chaos: opened right after the POST, it waits for each row; the hang is cut off at the agent's toolTimeoutMs"
+header "a live stream on chaos: opened right after the POST, it waits for each step and each piece of the answer; the hang is cut off at the agent's toolTimeoutMs"
 ticket=$(curl_show -s -X POST "$base/runs" -d '{"agent":"chaos","question":"Please hang while checking ORD-1"}')
 printf '%s\n' "$ticket"
 live_id=$(turn_id_of "$ticket")
@@ -121,13 +122,22 @@ sed -n '/^worker pid/,$p' "$worker_log"
 rm -f "$worker_log"
 echo "(worker stopped; the server stays up, so the next turns wait on the queue until a worker is started by hand)"
 
-header "two tools in one pass run together: a worker started with --slow shows wall < work"
+header "two tools in one pass run together: a worker started with --slow shows wall < work, and the live stream shows the answer arriving word by word"
 ticket=$(curl_show -s -X POST "$base/runs" -d '{"agent":"support","question":"Status of order ORD-2 and is product PRD-1 available?"}')
 printf '%s\n' "$ticket"
 parallel_id=$(turn_id_of "$ticket")
 if [ -z "$parallel_id" ]; then echo "no turn id in the POST reply"; exit 1; fi
-echo "(--slow gives every lookup 300 ms of simulated latency; two lookups in one pass take one sleep of wall time, not two:)"
-must worker --once --slow
+stream_out=$(mktemp -t harness-stream)
+echo "\$ curl -sN --max-time 8 $base/turns/$parallel_id/events > stream.txt &      (opened before the worker starts; what it received is printed after the worker ends)"
+curl -sN --max-time 8 "$base/turns/$parallel_id/events" > "$stream_out" &
+stream_pid=$!
+echo "(--slow gives every lookup 300 ms and every token 40 ms of simulated latency; two lookups in one pass take one sleep of wall time, not two:)"
+must worker --once --slow --api "$base"
+wait "$stream_pid"
+echo "(the stream as the client saw it, every step and every piece of the answer as it happened, then done: the two lookups overlapped, the tokens arrived 40 ms apart)"
+echo "\$ cat stream.txt"
+cat "$stream_out"
+rm -f "$stream_out"
 curl_show -s "$base/turns/$parallel_id"
 
 header "sub-agents: an agent as a tool; the concierge hands the shipment question to the logistics agent"
@@ -137,7 +147,7 @@ printf '%s\n' "$ticket"
 sub_id=$(turn_id_of "$ticket")
 if [ -z "$sub_id" ]; then echo "no turn id in the POST reply"; exit 1; fi
 echo "(the worker prints the child's rows indented: the parent's decision, the child's three rows, the AGENT row with the child's answer, the parent's done)"
-must worker --once
+must worker --once --api "$base"
 echo "(the same rows over HTTP: the child's spans carry parent and depth in attrs, the AGENT span carries the child's answer, and the turn's answer is that answer)"
 curl_show -s "$base/turns/$sub_id"
 
@@ -147,7 +157,7 @@ printf '%s\n' "$ticket"
 loop_id=$(turn_id_of "$ticket")
 if [ -z "$loop_id" ]; then echo "no turn id in the POST reply"; exit 1; fi
 echo "(loop delegates to loop delegates to loop; the loop at depth 2 may not delegate again, so its call is refused with an ERROR row, depth limit, and the answer climbs back up)"
-must worker --once
+must worker --once --api "$base"
 
 header "durability: the queue, the lease, the dead worker"
 echo "(submit writes the turn row QUEUED and its queue message without HTTP, and comes back with the id:)"
@@ -157,7 +167,7 @@ dur_id=$(printf '%s\n' "$sub_out" | sed -n 's/^submitted \(r-[0-9a-f]*\) .*/\1/p
 if [ -z "$dur_id" ]; then echo "no turn id in the submit output"; exit 1; fi
 curl_show -s "$base/turns/$dur_id"
 echo "(a worker takes it with a 2000 ms lease and dies right after its 2nd row is persisted: exit 3, no ack)"
-crash_out=$(harness worker --once --crash-after 2 --visibility-ms 2000)
+crash_out=$(harness worker --once --crash-after 2 --visibility-ms 2000 --api "$base")
 status=$?
 printf '%s\n' "$crash_out"
 if [ "$status" -ne 3 ]; then echo "expected exit 3 from the simulated crash, got $status"; exit 1; fi
@@ -165,7 +175,7 @@ echo "(process exited with code $status; the turn row says RUNNING, the message 
 echo '$ sleep 2'
 sleep 2
 echo "(the lease has run out, so the next worker receives the same message again and resumes from the last saved step:)"
-must worker --once
+must worker --once --api "$base"
 echo "(the API reads the same rows, whoever wrote them: DONE, attempt 2, claimed by the second worker's pid, all four spans)"
 curl_show -s "$base/turns/$dur_id"
 

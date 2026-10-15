@@ -39,7 +39,7 @@ class SubAgentTest {
 
     private Orchestrator orchestrator(Agent agent, TurnBudget budget) {
         ToolCaller caller = new ToolCaller(registry, agent.toolNames(), Duration.ofMillis(agent.toolTimeoutMs()));
-        return new Orchestrator(agent, registry, new RuleBasedLLM(), caller, new RelaySummarizer(), store, announced::add, 0, 0, budget);
+        return new Orchestrator(agent, registry, new RuleBasedLLM(), caller, store, announced::add, 0, 0, budget);
     }
 
     @Test

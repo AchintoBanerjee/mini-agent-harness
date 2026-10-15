@@ -8,15 +8,22 @@ import harness.agent.Agent;
 import harness.agent.AgentLoader;
 import harness.model.Done;
 import harness.model.LLMProxy;
+import harness.model.ModelReply;
 import harness.model.RuleBasedLLM;
 import harness.model.ToolCall;
+import harness.store.InMemoryRunStore;
+import harness.store.TurnRow;
+import harness.tools.Tool;
 import harness.tools.ToolCaller;
 import harness.tools.ToolLoader;
 import harness.tools.ToolRegistry;
 import java.nio.file.Path;
 import java.time.Duration;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.function.BiFunction;
+import java.util.function.Consumer;
 import org.junit.jupiter.api.Test;
 
 class OrchestratorTest {
@@ -25,7 +32,7 @@ class OrchestratorTest {
     private final Agent agent = AgentLoader.load(Path.of("agents", "support.json"));
 
     private Orchestrator orchestrator() {
-        return new Orchestrator(agent, registry, new RuleBasedLLM(), new ToolCaller(registry), new RelaySummarizer());
+        return new Orchestrator(agent, registry, new RuleBasedLLM(), new ToolCaller(registry));
     }
 
     @Test
@@ -72,12 +79,54 @@ class OrchestratorTest {
     }
 
     @Test
-    void summarizerCanBeSwapped() {
-        Summarizer shouting = turn -> "Here you go: " + new RelaySummarizer().summarize(turn).toUpperCase();
-        Orchestrator orchestrator = new Orchestrator(
-                agent, registry, new RuleBasedLLM(), new ToolCaller(registry), shouting);
+    void theAnswerIsStreamedToTheListenerPieceByPieceThenDone() {
+        Collecting listener = new Collecting();
+        Orchestrator orchestrator = new Orchestrator(agent, registry, new RuleBasedLLM(), new ToolCaller(registry),
+                new InMemoryRunStore(), listener);
 
-        assertEquals("Here you go: ORDER ORD-3: DELIVERED, SHIPMENT SHP-3", orchestrator.run("order ORD-3 status"));
+        String answer = orchestrator.run("What is the status of order ORD-1?");
+
+        String turnId = orchestrator.conversation().turns().getFirst().id();
+        assertEquals(List.of("Order ", "ORD-1: ", "SHIPPED, ", "shipment ", "SHP-1"), listener.tokens, "one word per piece, the space kept");
+        assertEquals(answer, String.join("", listener.tokens), "the pieces concatenate to the answer");
+        assertEquals(List.of(turnId), listener.tokenTurns.stream().distinct().toList(), "every piece names the turn");
+        assertEquals(List.of(turnId + " DONE " + answer), listener.ends, "done once, after the row says DONE");
+        assertEquals(List.of("step", "step", "step", "token", "token", "token", "token", "token", "done"), listener.order,
+                "the rows first, then the pieces, then done");
+    }
+
+    @Test
+    void aFailedTurnEndsWithDoneFailedAndNoTokens() {
+        Collecting listener = new Collecting();
+        Agent concierge = AgentLoader.load(Path.of("agents", "concierge.json"));
+        ToolCaller caller = new ToolCaller(registry, concierge.toolNames(), Duration.ofMillis(concierge.toolTimeoutMs()));
+        Orchestrator orchestrator = new Orchestrator(concierge, registry, new RuleBasedLLM(), caller,
+                new InMemoryRunStore(), listener, 0, 0, new TurnBudget(3));
+
+        assertThrows(IllegalStateException.class, () -> orchestrator.run("Where is shipment SHP-1 for my order?"));
+
+        String turnId = orchestrator.conversation().turns().getFirst().id();
+        assertEquals(List.of(), listener.tokens, "no answer was produced");
+        assertEquals(List.of(turnId + " FAILED null"), listener.ends);
+    }
+
+    @Test
+    void aChildLoopStreamsNoTokensAndTheTurnEndsOnce() {
+        Collecting listener = new Collecting();
+        Agent concierge = AgentLoader.load(Path.of("agents", "concierge.json"));
+        ToolCaller caller = new ToolCaller(registry, concierge.toolNames(), Duration.ofMillis(concierge.toolTimeoutMs()));
+        Orchestrator orchestrator = new Orchestrator(concierge, registry, new RuleBasedLLM(), caller,
+                new InMemoryRunStore(), listener);
+
+        String answer = orchestrator.run("Where is shipment SHP-1 for my order?");
+
+        assertEquals("Shipment SHP-1: IN TRANSIT, arriving 2026-10-16", answer);
+        assertEquals(answer, String.join("", listener.tokens), "only the parent's answer streams");
+        assertEquals(List.of("Shipment ", "SHP-1: ", "IN ", "TRANSIT, ", "arriving ", "2026-10-16"), listener.tokens,
+                "the child's answer came back as a tool result, not as pieces: the same words once, not twice");
+        assertEquals(1, listener.ends.size(), "exactly one done for the turn, none from the child");
+        assertEquals(6, listener.order.stream().filter("step"::equals).count(), "the child's rows are still announced");
+        assertEquals("done", listener.order.getLast());
     }
 
     @Test
@@ -85,14 +134,13 @@ class OrchestratorTest {
         Agent bad = new Agent("bad", "lists a tool that does not exist", List.of("order_status", "cancel_order"), 5, 2000);
 
         assertThrows(IllegalArgumentException.class, () ->
-                new Orchestrator(bad, registry, new RuleBasedLLM(), new ToolCaller(registry), new RelaySummarizer()));
+                new Orchestrator(bad, registry, new RuleBasedLLM(), new ToolCaller(registry)));
     }
 
     @Test
     void aModelThatNeverSaysDoneIsStoppedAfterMaxPasses() {
-        LLMProxy stubborn = (context, tools) -> new ToolCall("order_status", Map.of("orderId", "ORD-1"));
-        Orchestrator orchestrator = new Orchestrator(
-                agent, registry, stubborn, new ToolCaller(registry), new RelaySummarizer());
+        LLMProxy stubborn = deciding((context, tools) -> new ToolCall("order_status", Map.of("orderId", "ORD-1")));
+        Orchestrator orchestrator = new Orchestrator(agent, registry, stubborn, new ToolCaller(registry));
 
         orchestrator.run("anything");
 
@@ -103,10 +151,9 @@ class OrchestratorTest {
 
     @Test
     void hittingTheCapLeavesACutShortNoteAsTheLastRow() {
-        LLMProxy stubborn = (context, tools) -> new ToolCall("order_status", Map.of("orderId", "ORD-1"));
+        LLMProxy stubborn = deciding((context, tools) -> new ToolCall("order_status", Map.of("orderId", "ORD-1")));
         Agent twoPasses = new Agent("stubborn", "never says done", List.of("order_status"), 2, 2000);
-        Orchestrator orchestrator = new Orchestrator(
-                twoPasses, registry, stubborn, new ToolCaller(registry), new RelaySummarizer());
+        Orchestrator orchestrator = new Orchestrator(twoPasses, registry, stubborn, new ToolCaller(registry));
 
         String answer = orchestrator.run("anything");
 
@@ -124,7 +171,7 @@ class OrchestratorTest {
     void theLoopSurvivesAHangAndTheAnswerNamesTheCutOff() {
         Agent chaos = AgentLoader.load(Path.of("agents", "chaos.json"));
         ToolCaller impatient = new ToolCaller(registry, chaos.toolNames(), Duration.ofMillis(300));
-        Orchestrator orchestrator = new Orchestrator(chaos, registry, new RuleBasedLLM(), impatient, new RelaySummarizer());
+        Orchestrator orchestrator = new Orchestrator(chaos, registry, new RuleBasedLLM(), impatient);
         long started = System.nanoTime();
 
         String answer = orchestrator.run("Please hang while checking ORD-1");
@@ -143,7 +190,7 @@ class OrchestratorTest {
     void theLoopSurvivesAThrowingToolAndTheAnswerNamesTheError() {
         Agent chaos = AgentLoader.load(Path.of("agents", "chaos.json"));
         Orchestrator orchestrator = new Orchestrator(chaos, registry, new RuleBasedLLM(),
-                new ToolCaller(registry, chaos.toolNames(), Duration.ofSeconds(1)), new RelaySummarizer());
+                new ToolCaller(registry, chaos.toolNames(), Duration.ofSeconds(1)));
 
         String answer = orchestrator.run("boom");
 
@@ -155,11 +202,11 @@ class OrchestratorTest {
 
     @Test
     void aModelThatNamesAToolOutsideTheAgentsListIsDeniedAndTheLoopMovesOn() {
-        LLMProxy rogue = (context, tools) -> context.spans().isEmpty()
+        LLMProxy rogue = deciding((context, tools) -> context.spans().isEmpty()
                 ? new ToolCall("refund_order", Map.of("orderId", "ORD-1"))
-                : new Done();
+                : new Done());
         Orchestrator orchestrator = new Orchestrator(agent, registry, rogue,
-                new ToolCaller(registry, agent.toolNames(), Duration.ofSeconds(1)), new RelaySummarizer());
+                new ToolCaller(registry, agent.toolNames(), Duration.ofSeconds(1)));
 
         String answer = orchestrator.run("refund order ORD-1");
 
@@ -167,5 +214,48 @@ class OrchestratorTest {
         List<Span> rows = orchestrator.conversation().turns().get(0).spans();
         assertEquals(List.of(Span.Kind.LLM, Span.Kind.TOOL, Span.Kind.LLM), rows.stream().map(Span::kind).toList());
         assertEquals(Span.Status.DENIED, rows.get(1).status());
+    }
+
+    /** A model that decides as given and gives its final reply the way the stub does. */
+    static LLMProxy deciding(BiFunction<Context, List<Tool>, ModelReply> next) {
+        RuleBasedLLM stub = new RuleBasedLLM();
+        return new LLMProxy() {
+            @Override
+            public ModelReply next(Context context, List<Tool> tools) {
+                return next.apply(context, tools);
+            }
+
+            @Override
+            public String answer(Turn turn, Consumer<String> out) {
+                return stub.answer(turn, out);
+            }
+        };
+    }
+
+    /** Everything the loop announces, in order: each row, each piece of the answer, the end. */
+    static class Collecting implements RunListener {
+
+        final List<String> order = new ArrayList<>();
+        final List<String> tokens = new ArrayList<>();
+        final List<String> tokenTurns = new ArrayList<>();
+        final List<String> ends = new ArrayList<>();
+
+        @Override
+        public void on(Span span) {
+            order.add("step");
+        }
+
+        @Override
+        public void token(String turnId, String text) {
+            order.add("token");
+            tokens.add(text);
+            tokenTurns.add(turnId);
+        }
+
+        @Override
+        public void done(String turnId, TurnRow.Status status, String answer) {
+            order.add("done");
+            ends.add(turnId + " " + status + " " + answer);
+        }
     }
 }

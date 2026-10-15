@@ -50,7 +50,7 @@ class ParallelToolsTest {
         pair.register(sleeper("slow", 300));
         pair.register(sleeper("quick", 50));
         Agent agent = new Agent("pair", "a slow tool before a quick one", List.of("slow", "quick"), 5, 2000);
-        Orchestrator orchestrator = new Orchestrator(agent, pair, new RuleBasedLLM(), new ToolCaller(pair), new RelaySummarizer(), store, span -> { });
+        Orchestrator orchestrator = new Orchestrator(agent, pair, new RuleBasedLLM(), new ToolCaller(pair), store, span -> { });
         long started = System.nanoTime();
 
         String answer = orchestrator.run("run slow and quick");
@@ -80,7 +80,7 @@ class ParallelToolsTest {
     @Test
     void slowLookupsRunningTogetherTakeOneSleepNotTwo() {
         ToolLoader.SLOW_LOOKUP_MS = 300;
-        Orchestrator orchestrator = new Orchestrator(support, registry, new RuleBasedLLM(), new ToolCaller(registry), new RelaySummarizer(), store, span -> { });
+        Orchestrator orchestrator = new Orchestrator(support, registry, new RuleBasedLLM(), new ToolCaller(registry), store, span -> { });
 
         String answer = orchestrator.run("Status of order ORD-2 and is product PRD-1 available?");
 
@@ -102,13 +102,13 @@ class ParallelToolsTest {
                 throw new ResumeTest.Crash();
             }
         };
-        Orchestrator first = new Orchestrator(support, registry, new RuleBasedLLM(), new ToolCaller(registry), new RelaySummarizer(), store, dieAfterRow2);
+        Orchestrator first = new Orchestrator(support, registry, new RuleBasedLLM(), new ToolCaller(registry), store, dieAfterRow2);
         assertThrows(ResumeTest.Crash.class, () -> first.run("Status of order ORD-2 and is product PRD-1 available?"));
         String runId = first.conversation().turns().getFirst().id();
         assertEquals(List.of(Span.Kind.LLM, Span.Kind.TOOL), store.load(runId).stream().map(Span::kind).toList());
         assertEquals(Map.of("order_status", 1, "stock_status", 1), ToolLoader.HANDLER_CALLS, "both ran; only the first row landed");
 
-        Orchestrator second = new Orchestrator(support, registry, new RuleBasedLLM(), new ToolCaller(registry), new RelaySummarizer(), store, span -> { });
+        Orchestrator second = new Orchestrator(support, registry, new RuleBasedLLM(), new ToolCaller(registry), store, span -> { });
         String answer = second.resume(runId);
 
         assertEquals("Order ORD-2: PROCESSING\nProduct PRD-1: 42 units in stock", answer);

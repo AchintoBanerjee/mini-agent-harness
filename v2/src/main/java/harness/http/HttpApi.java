@@ -12,6 +12,7 @@ import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpServer;
 import harness.agent.Agent;
 import harness.agent.AgentLoader;
+import harness.core.RunListener;
 import harness.core.Span;
 import harness.eval.CaseResult;
 import harness.eval.EvalRunner;
@@ -35,16 +36,18 @@ import java.util.concurrent.Executors;
  * and /agents/{name}, GET /tools, POST /runs (the turn row and its queue message, 202 with
  * the turn id at once; a worker runs the loop; a conversationId in the body adds a turn to
  * an earlier conversation), GET /turns/{id} (the turn row, its spans, the answer when DONE;
- * /runs/{id} is the same), GET /turns/{id}/events (Server-Sent Events: every stored span
- * from Last-Event-ID on, then live until the turn ends) and POST /evals (the golden set,
- * scored in this process). Agents and tools stay files on disk; turns live in the store, so
- * this process does not care which worker ran the loop, and a client that goes away does
- * not stop its turn.
+ * /runs/{id} is the same), POST /turns/{id}/events (the worker's push: one event of the
+ * run's stream, appended to the stream this process holds for the turn), GET
+ * /turns/{id}/events (Server-Sent Events: that stream from Last-Event-ID on, each step, each
+ * piece of the answer, then done; the saved rows once when the stream is gone) and POST
+ * /evals (the golden set, scored in this process). Agents and tools stay files on disk;
+ * turns live in the store, so this process does not care which worker ran the loop, and a
+ * client that goes away does not stop its turn.
  */
 public class HttpApi {
 
-    /** How often an open event stream looks at the store for new rows. */
-    public static final long POLL_MS = 200;
+    /** How long one read of the stream waits for the next event before the handler checks whether to go on. */
+    static final long READ_WAIT_MS = 1000;
 
     private static final ObjectMapper JSON = new ObjectMapper();
     /** Pretty JSON so curl is readable; the eval table also puts every array element on its own line. */
@@ -57,6 +60,7 @@ public class HttpApi {
     private final Path golden;
     private final RunStore store;
     private final RunQueue queue;
+    private final RunStreams streams = new RunStreams();
     private HttpServer server;
     private volatile boolean stopped;
 
@@ -80,10 +84,35 @@ public class HttpApi {
         return server.getAddress().getPort();
     }
 
-    /** Stops listening; an open event stream ends at its next poll. Turns in flight belong to the workers. */
+    /** Stops listening; an open event stream ends at its next read. Turns in flight belong to the workers. */
     public void stop() {
         stopped = true;
         server.stop(0);
+    }
+
+    /**
+     * The loop's events into the streams this process holds: a row as a step event with the
+     * span as its data, a piece of the answer as a token event, the end as done. A worker in
+     * this process is wired to it directly; a worker in another process reaches the same
+     * append through POST /turns/{id}/events.
+     */
+    public RunListener producer() {
+        return new RunListener() {
+            @Override
+            public void on(Span span) {
+                streams.append(span.turnId(), "step", json(span));
+            }
+
+            @Override
+            public void token(String turnId, String text) {
+                streams.append(turnId, "token", JSON.createObjectNode().put("turnId", turnId).put("text", text).toString());
+            }
+
+            @Override
+            public void done(String turnId, TurnRow.Status status, String answer) {
+                streams.append(turnId, "done", doneData(turnId, status, answer).toString());
+            }
+        };
     }
 
     /** One line per request on stdout: the server's log. Errors become a JSON {"error": ...}. */
@@ -125,7 +154,11 @@ public class HttpApi {
             return method.equals("GET") ? getTurn(exchange, parts[1]) : methodNotAllowed(method, path);
         }
         if (parts.length == 3 && turns && parts[2].equals("events")) {
-            return method.equals("GET") ? events(exchange, parts[1]) : methodNotAllowed(method, path);
+            return switch (method) {
+                case "GET" -> events(exchange, parts[1]);
+                case "POST" -> push(exchange, parts[1]);
+                default -> methodNotAllowed(method, path);
+            };
         }
         if (parts.length == 1 && parts[0].equals("evals")) {
             return method.equals("POST") ? evals(exchange) : methodNotAllowed(method, path);
@@ -214,12 +247,32 @@ public class HttpApi {
     }
 
     /**
-     * Server-Sent Events. Every stored span after Last-Event-ID (or ?after=N) goes out at
-     * once, id = the span number; then the store is polled until the turn is DONE or
-     * FAILED, and a final "done" event carries the answer. The status is read before the
-     * rows, so when it says the turn ended, every row is already in hand. The rows come
-     * from the store, so it does not matter which worker wrote them, or whether one died
-     * and another took over.
+     * The worker's push: one event of the run's stream, {"event": step | token | done,
+     * "data": {...}}, appended to the stream this process holds for the turn. The stand-in
+     * for the append to the stream.
+     */
+    private int push(HttpExchange exchange, String id) throws IOException {
+        requireTurn(id);
+        JsonNode body = readJson(exchange);
+        String event = text(body, "event");
+        if (!List.of("step", "token", "done").contains(event)) {
+            throw new HttpError(400, "event must be step, token or done, got " + event);
+        }
+        if (!body.hasNonNull("data")) {
+            throw new HttpError(400, "the body needs \"data\"");
+        }
+        streams.append(id, event, body.get("data").toString());
+        exchange.sendResponseHeaders(204, -1);
+        return 204;
+    }
+
+    /**
+     * Server-Sent Events: the consumer of the run's stream. From the last id the client saw
+     * (Last-Event-ID or ?after=N) every entry of the stream goes out as it arrives, its id the
+     * entry's id: step with the span, token with a piece of the answer, then done, which ends
+     * the response. The stream is fed by the worker's pushes and lives in this process; the
+     * store is read only when the stream is gone (replay). A client that goes away does not
+     * stop its turn.
      */
     private int events(HttpExchange exchange, String id) throws IOException {
         requireTurn(id);
@@ -228,26 +281,51 @@ public class HttpApi {
         exchange.getResponseHeaders().set("Cache-Control", "no-cache");
         exchange.sendResponseHeaders(200, 0);
         try (OutputStream out = exchange.getResponseBody()) {
+            // the headers go out now, so the client sees the stream is open before its first event; the server would otherwise hold them until the first write
+            out.flush();
+            if (streams.get(id) == null && store.turn(id).status().ended()) {
+                return replay(out, id, after);
+            }
+            RunStreams.Stream stream = streams.open(id);
             while (!stopped) {
-                TurnRow turn = store.turn(id);
-                for (Span row : store.load(id, after + 1)) {
-                    write(out, "id: " + row.span() + "\nevent: step\ndata: " + JSON.writeValueAsString(row) + "\n\n");
-                    after = row.span();
+                List<RunStreams.Entry> entries = stream.read(after, READ_WAIT_MS);
+                if (entries.isEmpty()) {
+                    if (stream.finished()) {
+                        // a client that has everything still gets done
+                        entries = List.of(stream.done());
+                    } else if (stream.size() == 0 && store.turn(id).status().ended()) {
+                        // the turn ran without feeding this API: the empty stream goes, so a later reader replays at once
+                        streams.forget(id);
+                        return replay(out, id, after);
+                    } else {
+                        continue;
+                    }
+                }
+                for (RunStreams.Entry entry : entries) {
+                    if (entry.event().equals("done")) {
+                        write(out, "event: done\ndata: " + entry.data() + "\n\n");
+                        return 200;
+                    }
+                    write(out, "id: " + entry.id() + "\nevent: " + entry.event() + "\ndata: " + entry.data() + "\n\n");
+                    after = entry.id();
                 }
                 out.flush();
-                if (turn.status().ended()) {
-                    ObjectNode done = JSON.createObjectNode().put("turnId", id).put("status", turn.status().name());
-                    if (turn.status() == TurnRow.Status.DONE) {
-                        done.put("answer", turn.answer());
-                    }
-                    write(out, "event: done\ndata: " + done + "\n\n");
-                    return 200;
-                }
-                Thread.sleep(POLL_MS);
             }
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
         }
+        return 200;
+    }
+
+    /**
+     * The fallback: the stream is gone (its time ran out, this process restarted, or no worker
+     * fed it), so the saved rows go out once, from the store, each a step event with the span
+     * number as its id, then done. The live path never reads the store.
+     */
+    private int replay(OutputStream out, String id, int after) throws IOException {
+        TurnRow turn = store.turn(id);
+        for (Span row : store.load(id, after + 1)) {
+            write(out, "id: " + row.span() + "\nevent: step\ndata: " + json(row) + "\n\n");
+        }
+        write(out, "event: done\ndata: " + doneData(id, turn.status(), turn.answer()) + "\n\n");
         return 200;
     }
 
@@ -361,6 +439,20 @@ public class HttpApi {
 
     private static void write(OutputStream out, String text) throws IOException {
         out.write(text.getBytes(StandardCharsets.UTF_8));
+    }
+
+    /** The done event's data: the turn, how it ended, and the answer when it ended DONE. */
+    private static ObjectNode doneData(String turnId, TurnRow.Status status, String answer) {
+        ObjectNode done = JSON.createObjectNode().put("turnId", turnId).put("status", status.name());
+        if (status == TurnRow.Status.DONE) {
+            done.put("answer", answer);
+        }
+        return done;
+    }
+
+    /** One line of JSON, the shape a step event carries. */
+    private static String json(Object value) {
+        return JSON.valueToTree(value).toString();
     }
 
     /** A reply that is not 2xx: the status and the one-line reason the client gets back. */

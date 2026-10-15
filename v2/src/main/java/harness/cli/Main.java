@@ -9,9 +9,11 @@ import harness.eval.CaseResult;
 import harness.eval.EvalRunner;
 import harness.eval.GoldenCase;
 import harness.http.HttpApi;
+import harness.model.RuleBasedLLM;
 import harness.store.RunQueue;
 import harness.store.SqliteRunStore;
 import harness.tools.ToolLoader;
+import harness.worker.HttpPush;
 import harness.worker.Worker;
 import java.io.IOException;
 import java.nio.file.Files;
@@ -21,15 +23,17 @@ import java.util.List;
 
 /**
  * The developer's local tools, run from v2/: serve [--port 8080] · worker [--once]
- * [--visibility-ms 2000] [--crash-after N] [--slow] · submit --agent X "question" · eval
- * [evals/golden.json] · replay turnId [fromSpan]. The HTTP API is the face of the harness;
+ * [--visibility-ms 2000] [--crash-after N] [--slow] [--api http://localhost:8080] · submit
+ * --agent X "question" · eval [evals/golden.json] · replay turnId [fromSpan]. The HTTP API is the face of the harness;
  * these are what you run next to it. Args are parsed by hand. Agents and tools are read
  * from agents/ and tools/; every turn lives in harness.db (SQLite), the same file the
  * server and the workers share. serve queues turns, worker takes them off the queue and
  * runs them, submit queues one without HTTP. --crash-after simulates a worker dying
  * mid-turn so the next worker has something to pick up; --slow gives every lookup 300 ms
- * of simulated latency so that tools running together can be seen to overlap. eval scores
- * the golden set in memory and prints one row per case and the totals.
+ * and every piece of the answer 40 ms of simulated latency, so that tools running together
+ * can be seen to overlap and the stream can be watched; --api is where the worker pushes
+ * each event of a turn, the run's stream held by the server. eval scores the golden set in
+ * memory and prints one row per case and the totals.
  */
 public class Main {
 
@@ -38,6 +42,7 @@ public class Main {
     static final Path DB = SqliteRunStore.DEFAULT_FILE;
     static final Path GOLDEN = Path.of("evals", "golden.json");
     static final int DEFAULT_PORT = 8080;
+    static final String DEFAULT_API = "http://localhost:" + DEFAULT_PORT;
 
     public static void main(String[] args) {
         if (args.length == 0) {
@@ -85,12 +90,14 @@ public class Main {
      * --once handles one message and exits (1 when there was none); otherwise it polls
      * every 500 ms until killed. --crash-after N is the simulated death: exit 3 right
      * after row N is persisted, without acking. --slow is the simulated latency on every
-     * lookup, so two tools in one pass can be seen to overlap.
+     * lookup and every piece of the answer, so two tools in one pass can be seen to overlap
+     * and the stream to arrive piece by piece. --api is the server every event is pushed to.
      */
     static void worker(List<String> args) {
         boolean once = false;
         long visibilityMs = Worker.DEFAULT_VISIBILITY_MS;
         int crashAfter = 0;
+        String api = DEFAULT_API;
         for (int i = 0; i < args.size(); i++) {
             String arg = args.get(i);
             if (arg.equals("--once")) {
@@ -101,18 +108,23 @@ public class Main {
                 crashAfter = positive(args.get(++i), "--crash-after");
             } else if (arg.equals("--slow")) {
                 ToolLoader.SLOW_LOOKUP_MS = 300;
+                RuleBasedLLM.SLOW_TOKEN_MS = 40;
+            } else if (arg.equals("--api") && i + 1 < args.size()) {
+                api = args.get(++i);
             } else {
-                fail("usage: worker [--once] [--visibility-ms 2000] [--crash-after N] [--slow]");
+                fail("usage: worker [--once] [--visibility-ms 2000] [--crash-after N] [--slow] [--api " + DEFAULT_API + "]");
             }
         }
         String pid = String.valueOf(ProcessHandle.current().pid());
         try (SqliteRunStore store = new SqliteRunStore(DB)) {
             Worker worker = new Worker(AGENTS, TOOLS, store, new RunQueue(store), pid, visibilityMs);
             worker.crashAfter(crashAfter);
+            worker.stream(new HttpPush(api));
             System.out.println("worker pid " + pid + " · lease " + visibilityMs + " ms"
                     + (once ? " · once" : " · polling every " + Worker.POLL_MS + " ms, ctrl-c stops it")
-                    + (ToolLoader.SLOW_LOOKUP_MS > 0 ? " · slow: every lookup sleeps " + ToolLoader.SLOW_LOOKUP_MS + " ms (latency simulated)" : "")
-                    + " · " + DB);
+                    + (ToolLoader.SLOW_LOOKUP_MS > 0 ? " · slow: every lookup sleeps " + ToolLoader.SLOW_LOOKUP_MS
+                        + " ms and every token " + RuleBasedLLM.SLOW_TOKEN_MS + " ms (latency simulated)" : "")
+                    + " · streams to " + api + " · " + DB);
             if (!once) {
                 worker.loop();
             } else if (!worker.once()) {
@@ -218,7 +230,7 @@ public class Main {
     }
 
     static void usage() {
-        fail("usage: serve [--port 8080] | worker [--once] [--visibility-ms 2000] [--crash-after N] [--slow]"
+        fail("usage: serve [--port 8080] | worker [--once] [--visibility-ms 2000] [--crash-after N] [--slow] [--api " + DEFAULT_API + "]"
                 + " | submit --agent <name> \"question\" | eval [evals/golden.json] | replay <turnId> [fromSpan]"
                 + "   (exit " + CrashAfter.EXIT_CODE + " is the simulated crash)");
     }

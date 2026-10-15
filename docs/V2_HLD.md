@@ -1,6 +1,6 @@
 # v2 HLD: keeping it simple
 
-[What v2 is](#what-v2-is) · [The data model](#the-data-model) · [The HTTP endpoints](#the-http-endpoints) · [Streaming the answer](#streaming-the-answer) · [Persistence](#persistence) · [Agents and tools are metadata](#agents-and-tools-are-metadata) · [Try it](#try-it)
+[What v2 is](#what-v2-is) · [The data model](#the-data-model) · [The HTTP endpoints](#the-http-endpoints) · [Streaming the answer](#streaming-the-answer) · [Persistence](#persistence) · [Agents and tools are metadata](#agents-and-tools-are-metadata) · [Try it](#try-it) · [The loop's features, already built](LOOP_FEATURES.md)
 
 The harness as a small service: you call it over HTTP, its state lives in one SQLite file, and the answer streams back as the steps happen. The model is still a stub; nothing needs a key or a network. Every output below is from a real run of `./demo.sh`; the committed `demo-output.txt` is a later run, so its ids and timings differ, nothing else.
 
@@ -10,7 +10,7 @@ The harness as a small service: you call it over HTTP, its state lives in one SQ
 
 - **End users** ask a question and get a job id back at once; the answer follows as a stream.
 - **API layer** is the one face: `POST /runs` writes the turn row and returns its id; `GET /turns/{id}` reads it; `GET /turns/{id}/events` streams it.
-- **Orchestrator** is the loop: build the context, call the model, run the tool it asks for, repeat until the model says done or the agent's pass cap hits. Every step is written to the store before the next one is taken.
+- **Orchestrator** is the loop: build the context, call the model, run the tool it asks for, repeat until the model says done or the agent's pass cap hits. Every step is written to the store before the next one is taken. What else the loop already does, parallel tool calls, the clock on every call, the tool-list gate, the caps, the answer, is on [its own page](LOOP_FEATURES.md), each with a run.
 - **One service, two layers.** The HTTP face and the loop are drawn as one service here. Splitting them, so a turn outlives the request that created it, is the durability page, and v2's `serve` and `worker` commands are that split; the Try it section runs both.
 - **Tool layer** is the registry built from `tools/*.json`; the file's type picks the adapter, the agent's file says which tools it may call and for how long.
 - **Model** is a rule stub today; a real model goes behind the same interface, and in production it is the one step shared by every customer.

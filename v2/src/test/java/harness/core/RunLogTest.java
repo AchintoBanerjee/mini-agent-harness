@@ -29,7 +29,7 @@ class RunLogTest {
     @Test
     void rowsLandInTheStoreInOrderWithIncreasingSteps() {
         Orchestrator orchestrator = new Orchestrator(agent, registry, new RuleBasedLLM(),
-                new ToolCaller(registry), new RelaySummarizer(), store, announced::add);
+                new ToolCaller(registry), store, announced::add);
 
         orchestrator.run("What is the status of order ORD-1?");
         orchestrator.run("Is product PRD-1 available?");
@@ -59,15 +59,15 @@ class RunLogTest {
                 return super.call(call);
             }
         };
-        LLMProxy checkingToo = (context, tools) -> {
+        LLMProxy checkingToo = OrchestratorTest.deciding((context, tools) -> {
             if (!context.spans().isEmpty()) {
                 Span last = store.load(context.spans().getLast().turnId()).getLast();
                 assertEquals(Span.Kind.TOOL, last.kind(), "the TOOL row is stored before the model is asked again");
             }
             return new RuleBasedLLM().next(context, tools);
-        };
+        });
         Orchestrator orchestrator = new Orchestrator(agent, registry, checkingToo,
-                checking, new RelaySummarizer(), store, announced::add);
+                checking, store, announced::add);
 
         assertEquals("Order ORD-1: SHIPPED, shipment SHP-1", orchestrator.run("What is the status of order ORD-1?"));
         assertEquals(3, announced.size());

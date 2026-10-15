@@ -18,7 +18,7 @@ The user's connection is open on one API pod. Their turn is running on an orches
 - **A Redis Stream per job id.** The orchestrator appends each step to it as the step happens. The API pod holding the connection reads the stream from the last id the client saw and forwards each entry as a Server-Sent Event.
 - **Reconnect on any pod.** The client sends the last id it saw; the new pod reads from there. Nothing lost, nothing twice. A TTL clears the stream after the turn is done.
 - **Why a Stream and not pub/sub.** Pub/sub has no buffer: a client away for a second misses what was published. A Stream keeps the entries with ids, so the gap is replayed from Redis. Other queues do this too, but they are heavier, and we already run a Redis cluster.
-- **The stream is for the live experience.** The orchestrator writes every step and the final answer to the store anyway, so if the stream fails the API or the client gets the answer from the store. That works, and it is a bad experience; the stream is what makes it a good one.
+- **The stream is for the live experience.** The orchestrator writes every step and the final answer to the store anyway, so if the stream fails the API or the client gets the answer from the store. That works, and it is a bad experience; the stream is what makes it a good one. v2 has the same shape on one machine: the worker pushes each event to the API over HTTP, the API holds the run's stream in memory and reads the store only when the stream is gone.
 - **A dropped connection is not a cancel.** The turn keeps running; cancel is its own request.
 
 | Option | How it works | What you get | What it costs |
