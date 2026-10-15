@@ -1,6 +1,6 @@
 # Sub-agents: an agent as a tool
 
-[The issue](#the-issue) · [The design](#the-design) · [The choices](#the-choices) · [The DAG](#the-dag) · [The implementation](#the-implementation) · [Proof](#proof)
+[The issue](#the-issue) · [The choices](#the-choices) · [Agent as a tool](#agent-as-a-tool) · [The implementation](#the-implementation) · [Proof](#proof) · [The DAG](#the-dag)
 
 A run can hand a question to another agent and get the answer back as a tool result: the child is the same loop class, run inside the tool call, its rows in the same turn (job id). Every output below is pasted from `demo-output.txt`, which `./demo.sh` writes.
 
@@ -10,11 +10,31 @@ A run can hand a question to another agent and get the answer back as a tool res
 - Every hand-off costs model calls and context, and a hop nobody measured is a cost nobody sees.
 - The question every multi-agent shape has to answer: who decides the next step, and who sees what.
 
-## The design
+## The choices
 
-![v2 HLD](v2-hld.svg)
+Three ways to let agents work together. The first is the one we did, and it was the wrong default; the other two are the ones that work, and they answer different questions.
 
-The child loop is the same Orchestrator class, run inside a tool call.
+| option | who decides the next step | who sees what | cost per hop |
+|---|---|---|---|
+| group chat / supervisor broadcast | a supervisor model, every round, from the whole transcript | every agent sees the whole monologue | about two model calls per hop, the worker's and the supervisor's, and the transcript grows with every hop, so the tokens grow with the square of the hops |
+| agent as a tool | the parent's own tool choice: the call that happens anyway is the routing | the child sees the goal and its tools; the parent sees the answer | one model call per hop on the child's side, no routing call; linear in the hops |
+| DAG (directed acyclic graph: the flow drawn as nodes and edges) | nobody at run time: the edges hold the sequence | each node sees its inputs | zero tokens for the routing; replayable, testable |
+
+One question decides: do I know the sequence up front? Known → the DAG. Unknown → agent as a tool. Group chat is risky and never the default.
+
+Things to watch for:
+
+- one agent's context leaking into another's: the answer should cross, not the transcript;
+- a supervisor that must see everything to decide anything;
+- cost per hop that nobody measured;
+- an agent that delegates to itself (the depth cap);
+- a tree that burns passes (the shared budget).
+
+The scar, in three lines. We picked a framework's group chat as the default without running the cost math. I went deeper: up to twice the LLM calls, and every agent seeing the whole monologue; I had not researched the pattern enough at the start. I went to leadership, no more teams on it; the known paths moved onto our in-house DAG and agent as a tool for the rest, about 30 to 40 percent off median latency, and a missed release, caught before production.
+
+## Agent as a tool
+
+When the sequence is not known up front, the parent's own tool choice is the router. The child loop is the same Orchestrator class, run inside a tool call; the HLD picture does not change.
 
 The example: `concierge` (tools `order_status`, `ask_logistics`) is asked "Where is shipment SHP-1 for my order?"; `logistics` (tools `shipping_status`) is the agent behind `ask_logistics`.
 
@@ -37,30 +57,6 @@ The child sees only what the parent hands it: the goal, and its own tools. The p
 - **Run store**: no new row, no new table; the child's spans carry `parent` and `depth` in `attrs`, so the API, the stream and `replay` show the tree.
 - **Bounds in the loop, not in the prompt**: depth cap 2, so an agent that lists itself ends with an `ERROR` row, `depth limit`, never a stack overflow; one budget of model calls per turn (`maxModelCalls`, default 20) shared down the tree, and spent means `FAILED` with a NOTE row, `budget exhausted`.
 - Out of scope for the POC: a worker that dies inside a child loop (resume reads the saved rows as one flat list); two agent tools in one pass, which interleave their rows.
-
-## The choices
-
-| option | who decides the next step | who sees what | cost per hop |
-|---|---|---|---|
-| group chat / supervisor broadcast | a supervisor model, every round, from the whole transcript | every agent sees the whole monologue | about two model calls per hop, the worker's and the supervisor's, and the transcript grows with every hop, so the tokens grow with the square of the hops |
-| agent as a tool | the parent's own tool choice: the call that happens anyway is the routing | the child sees the goal and its tools; the parent sees the answer | one model call per hop on the child's side, no routing call; linear in the hops |
-| DAG (directed acyclic graph: the flow drawn as nodes and edges) | nobody at run time: the edges hold the sequence | each node sees its inputs | zero tokens for the routing; replayable, testable |
-
-One question decides: do I know the sequence up front? Known → the DAG. Unknown → agent as a tool. Group chat is risky and never the default.
-
-Things to watch for:
-
-- one agent's context leaking into another's: the answer should cross, not the transcript;
-- a supervisor that must see everything to decide anything;
-- cost per hop that nobody measured;
-- an agent that delegates to itself (the depth cap);
-- a tree that burns passes (the shared budget).
-
-The scar, in three lines. We picked a framework's group chat as the default without running the cost math. I went deeper: up to twice the LLM calls, and every agent seeing the whole monologue; I had not researched the pattern enough at the start. I went to leadership, no more teams on it; the known paths moved onto our in-house DAG and agent as a tool for the rest, about 30 to 40 percent off median latency, and a missed release, caught before production.
-
-## The DAG
-
-Most of the time you know your workflow, and workflows can be long, so scaling them is the concern. The DAG holds the flow and the model never decides it: the routing is the edges, zero tokens, replayable. The engine I would use is Temporal: durable, replayable, the long workflow survives its worker. Not implemented here, but a strong part of an agent platform.
 
 ## The implementation
 
@@ -269,3 +265,10 @@ done r-000b · 9 spans · 71 ms · DONE in harness.db · acked · handler calls:
 - Six rows, one numbering, one turn: 1 the parent's decision, 2 to 4 the child's with `parent 1` and `depth 1`, 5 the `AGENT` row with the child's answer, 6 the parent's done; the turn's `answer` is the child's.
 - Span 2's `attrs` hold the child's question, the goal, and nothing of the parent's conversation; span 5 is the only row of the child's work the parent's loop saw.
 - The loop agent goes three loops deep and stops: row 4, at depth 2, is the refused call, `depth limit`, an `ERROR`; each loop above relays it and says done; six model calls, no stack overflow.
+
+## The DAG
+
+The other pattern, for when the sequence is known. Not implemented here; the design in four sentences.
+
+Most of the time you know your workflow, and workflows can be long, so scaling them is the concern. The DAG holds the flow and the model never decides it: the routing is the edges, zero tokens, replayable. The engine I would use is Temporal: durable, replayable, the long workflow survives its worker. Not implemented here, but a strong part of an agent platform.
+
