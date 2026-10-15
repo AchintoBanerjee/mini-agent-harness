@@ -6,32 +6,30 @@ The loop itself is cheap. What has to scale is around it: the pods that run the 
 
 ## The pods
 
-- A worker pod holds a run, not a request: a turn lives thirty to sixty seconds and makes five to ten model and tool calls in a row. Memory per in-flight run, not CPU, is the real cost of a pod.
-- The lever is queue depth, not request count: backlog grows, add workers; the queue drains, remove them. That is the Kubernetes autoscaler reading the queue instead of CPU.
-- The in-flight run survives the pod because of the lease and the saved steps. Nothing new here; it is the durability design doing its job.
+- Standard: Kubernetes autoscales the API pods on load, and the orchestrator pods on load and on the queue depth. Provision for spikes, keep a few pods warm. Nothing new here.
+- The consequence that matters: with the queue and the autoscaling, the pod that holds the user's connection and the pod that runs their turn are different pods, and pods come and go all the time. That is the next problem.
 
 ## The stream
 
-The client holds an open connection on one API node while the loop runs on a worker somewhere else, and the worker never knows which node that is.
+The user's connection is open on one API pod. Their turn is running on an orchestrator pod. Tomorrow both are different pods. The orchestrator has to reach whichever pod holds the connection, every time.
 
-![the stream across stateless API nodes](scaling-stream.svg)
+![the stream across pods](scaling-stream.svg)
 
-- **API nodes are stateless** behind the load balancer. The only thing pinned is the open stream, to the node that holds it, for as long as it is open.
-- **The worker publishes every step by job id** onto Redis. It does not address a node.
-- **The node holding the connection subscribes by job id** and forwards each step as a Server-Sent Event, the span number as the event id.
-- **Reconnect anywhere:** the client sends the last id it saw, the new node reads the tail from the store and then follows the bus. Nothing is lost, nothing is sent twice.
-- **A dropped connection is not a cancel.** The worker keeps going; cancel is its own request, checked between steps, and a tool call in flight finishes.
-- **The bus is needed on exactly one leg,** worker to the node holding the connection. The model and the tools stay point-to-point with a retry.
+- **A Redis Stream per job id.** The orchestrator appends each step to it as the step happens. The API pod holding the connection reads the stream from the last id the client saw and forwards each entry as a Server-Sent Event.
+- **Reconnect on any pod.** The client sends the last id it saw; the new pod reads from there. Nothing lost, nothing twice. A TTL clears the stream after the turn is done.
+- **Why a Stream and not pub/sub.** Pub/sub has no buffer: a client away for a second misses what was published. A Stream keeps the entries with ids, so the gap is replayed from Redis. Other queues do this too, but they are heavier, and we already run a Redis cluster.
+- **The stream is for the live experience.** The orchestrator writes every step and the final answer to the store anyway, so if the stream fails the API or the client gets the answer from the store. That works, and it is a bad experience; the stream is what makes it a good one.
+- **A dropped connection is not a cancel.** The turn keeps running; cancel is its own request.
 
 | Option | How it works | What you get | What it costs |
 |---|---|---|---|
-| Redis pub/sub by job id | the worker publishes, the holding node subscribes and forwards; replay comes from the store | fixes location: the loop runs anywhere, the stream lives anywhere; the cheapest piece to add | nothing published while the client was away is on the bus; reconnect is a store read |
-| Redis Streams per job id | the worker appends with ids; the node reads from the client's last id; a TTL after done | fixes location and the gap: replay from the last id without a store read, de-duplication by id for free | a stream per job in Redis until its TTL; ids and de-duplication on the client; the finished turn still comes from the store after the TTL |
-| poll the store | the node or the client reads rows past the last id on a timer | no new infrastructure; the store is the truth anyway | latency is the poll interval; a store read per poll per open connection |
+| Redis pub/sub by job id | the orchestrator publishes, the holding pod forwards | the smallest piece that frees the turn from the pod | no buffer: anything published while the client was away is gone |
+| Redis Stream per job id | the orchestrator appends with ids; the holding pod reads from the client's last id; a TTL after done | the buffer: replay from the last id; de-duplication by id for free | a stream per job in Redis until its TTL; ids on the client |
+| poll the store | the client reads rows past its last id on a timer | no new infrastructure | latency is the poll interval; a store read per poll per connection |
 
-I pick pub/sub for the live leg because it is the smallest thing that frees the loop from the node, and the store for replay because the spans are already there. Streams is the step up when reconnects are common enough that the store read on every one of them matters.
+I pick the Redis Stream: we already run the cluster, and the buffer is the whole point. The same shape is in HelloInterview's Design ChatGPT write-up: a run id, a stream per run, any node replays from the last id.
 
-**What I ran.** The first shape streamed the turn on the same request that started it, one node running the whole loop inside that request's timeout; a mid-turn drop lost the in-flight events and kept what was persisted at the end. The design above is the next shape from my own note: a thin API layer that holds the connection and subscribes to tokens by run id over Redis pub/sub, the loop on queued workers. Replay from the last id is the designed fix, not shipped.
+**What I ran.** The first shape streamed the turn on the same request that started it, one pod running the whole loop inside that request's timeout; a mid-turn drop lost the in-flight events and kept what was persisted at the end. My own note for the next shape is the thin API layer subscribing by run id; the Stream with replay from the last id is the designed fix, not shipped.
 
 ## The GPU
 
