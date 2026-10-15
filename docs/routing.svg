@@ -1,0 +1,33 @@
+<svg viewBox="0 0 1120 400" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:1120px;font-family:-apple-system,Segoe UI,Roboto,sans-serif;font-size:12px">
+<defs><marker id="ah" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#1a1f2b"/></marker><marker id="ahb" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#0f6cbd"/></marker></defs>
+<style>.b{fill:#fff;stroke:#1a1f2b;stroke-width:1.4;rx:8}.s{fill:#f1f0ec;stroke:#1a1f2b;stroke-width:1.2;rx:8}.o{fill:#eef1f5;stroke:#0f6cbd;stroke-width:1.6;rx:8}.mt{fill:#fbe6d2;stroke:#a85713;stroke-width:1.6;rx:8}.wx{fill:#f8e3e4;stroke:#b0222b;stroke-width:1.6;rx:8}.h{fill:#1a1f2b;font-weight:600}.m{fill:#5b6472;font-size:10px}.y{fill:#6b7280;font-size:9.5px;font-weight:700;letter-spacing:.08em}.wm{fill:#a85713;font-size:10px;font-weight:700}.rx{fill:#b0222b;font-size:10px;font-weight:600}.bx{fill:#0f6cbd;font-size:10px;font-weight:600}.l{stroke:#1a1f2b;stroke-width:1.3;marker-end:url(#ah)}.p{fill:none;stroke:#1a1f2b;stroke-width:1.3;marker-end:url(#ah)}.d{stroke:#0f6cbd;stroke-width:1.3;stroke-dasharray:5 4;marker-end:url(#ahb);fill:none}.pk{fill:none;stroke:#0f6cbd;stroke-width:2.2;marker-end:url(#ahb)}</style>
+<rect width="1120" height="400" fill="#fff"/>
+<text class="y" x="15" y="14">ROUTING ACROSS PROVIDERS — THE AGENT BRINGS ITS VALIDATED SET · THE ROUTER ONLY PICKS WHERE TO RUN IT</text>
+
+<rect class="b" x="15" y="60" width="190" height="96"/><text class="h" x="110" y="82" text-anchor="middle">Agent file</text><text class="m" x="110" y="100" text-anchor="middle">validated set: strong, cheap</text><text class="m" x="110" y="114" text-anchor="middle">the models its golden set passed on</text><text class="m" x="110" y="134" text-anchor="middle">never a model the router chose</text>
+<rect class="s" x="15" y="180" width="190" height="70"/><text class="h" x="110" y="202" text-anchor="middle">Tenant policy</text><text class="m" x="110" y="220" text-anchor="middle">regions allowed: A, B · not C</text><text class="m" x="110" y="234" text-anchor="middle">providers permitted · own key</text>
+<rect class="b" x="15" y="274" width="190" height="56"/><text class="h" x="110" y="296" text-anchor="middle">The loop</text><text class="m" x="110" y="314" text-anchor="middle">asks the LLM proxy; never knows which</text>
+<line class="l" x1="205" y1="108" x2="243" y2="108"/><line class="l" x1="205" y1="215" x2="243" y2="215"/><line class="l" x1="205" y1="302" x2="243" y2="302"/>
+
+<rect class="o" x="245" y="40" width="330" height="310"/><text class="h" x="260" y="62">LLM proxy — the gateway in production</text><text class="m" x="260" y="78">the governor lives here too: one decision, one place</text>
+<rect class="b" x="260" y="92" width="300" height="52"/><text class="h" x="272" y="110">① candidates</text><text class="m" x="272" y="126">the validated set ∩ what the tenant allows</text><text class="m" x="272" y="138">here: strong and cheap, in A or B</text>
+<rect class="b" x="260" y="152" width="300" height="52"/><text class="h" x="272" y="170">② affinity</text><text class="m" x="272" y="186">a live conversation keeps its model and replica (the prefix cache)</text><text class="m" x="272" y="198">moves only if that replica is over the threshold or down</text>
+<rect class="b" x="260" y="212" width="300" height="64"/><text class="h" x="272" y="230">③ pick</text><text class="m" x="272" y="246">order by distance, nearest permitted region first</text><text class="m" x="272" y="258">take the first whose meter is under the threshold</text><text class="m" x="272" y="270">none under: the lowest meter</text>
+<rect class="b" x="260" y="284" width="300" height="52"/><text class="h" x="272" y="302">④ fallback</text><text class="m" x="272" y="318">throttled or down: the next entry in the same order</text><text class="m" x="272" y="330">never a model outside the set</text>
+<line class="l" x1="410" y1="144" x2="410" y2="150"/><line class="l" x1="410" y1="204" x2="410" y2="210"/><line class="l" x1="410" y1="276" x2="410" y2="282"/>
+
+<text class="bx" x="620" y="58">REGION A · nearest</text>
+<rect class="mt" x="620" y="66" width="220" height="48"/><text class="h" x="730" y="85" text-anchor="middle">strong · meter 92</text><text class="wm" x="730" y="102" text-anchor="middle">over the threshold</text>
+<rect class="mt" x="620" y="122" width="220" height="48"/><text class="h" x="730" y="141" text-anchor="middle">cheap · meter 41</text><text class="m" x="730" y="158" text-anchor="middle">under · in the set · picked</text>
+<text class="bx" x="620" y="196">REGION B · next</text>
+<rect class="mt" x="620" y="204" width="220" height="48"/><text class="h" x="730" y="223" text-anchor="middle">strong · meter 35</text><text class="m" x="730" y="240" text-anchor="middle">the fallback for strong</text>
+<rect class="mt" x="620" y="260" width="220" height="48"/><text class="h" x="730" y="279" text-anchor="middle">cheap · meter 60</text><text class="m" x="730" y="296" text-anchor="middle">the fallback for cheap</text>
+<text class="rx" x="880" y="58">REGION C · not permitted</text>
+<rect class="wx" x="880" y="66" width="220" height="48"/><text class="h" x="990" y="85" text-anchor="middle">strong · meter 12</text><text class="rx" x="990" y="102" text-anchor="middle">idle, and never a candidate</text>
+<rect class="s" x="880" y="204" width="220" height="104"/><text class="h" x="990" y="224" text-anchor="middle">The meter, per model per region</text><text class="m" x="990" y="242" text-anchor="middle">saturation from calls and tokens,</text><text class="m" x="990" y="256" text-anchor="middle">per window, the scaling page</text><text class="m" x="990" y="276" text-anchor="middle">distance orders · the threshold gates</text><text class="m" x="990" y="290" text-anchor="middle">load breaks the tie</text>
+<path class="pk" d="M560,244 L590,244 L590,146 L618,146"/>
+<path class="d" d="M560,310 L600,310 L600,228 L618,228"/>
+
+<text class="m" x="15" y="372">The example: the set is strong and cheap; A is nearest but its strong is over the threshold, so the pick is cheap in A, with strong in B as the fallback. Nothing in C is ever a candidate.</text>
+<text class="m" x="15" y="388">Blue = the decision, design from production · orange = models on shared GPUs · red = a region the tenant's law rules out · solid blue = the pick, dashed = the fallback.</text>
+</svg>

@@ -14,7 +14,9 @@ This page is design, from running a harness in production at scale. v2 has the s
 
 The entry point is the LLM proxy from the HLD. In production it is the gateway, and the governor on the scaling page lives in it: routing and capacity are one decision made at one place, on the same numbers.
 
-The stance: the router never chooses a model for an agent. The agent brings the list of models it was validated against, the ones its golden set passed on, and the router only picks where to run it. That leaves two runtime factors, where a model is and how busy it is, and the meter supplies the second.
+![routing: the agent brings its validated set, the router picks where to run it](routing.svg)
+
+The stance: the router never chooses a model for an agent. The agent brings the list of models it was validated against, the ones its golden set passed on, and the router only picks where to run it. That leaves two runtime factors, where a model is and how busy it is. The second is the meter from the scaling page, the same number the governor gates on: saturation computed per window from calls and tokens, kept per model per region. Nothing new is measured for routing; the router reads what the governor already has.
 
 1. **Candidates.** The agent's validated set, intersected with what the tenant allows: region law first, then the providers the contract permits, a bring-your-own key. If the agent names one model, the set has one entry and the router only picks a region.
 2. **Affinity.** A live conversation stays on the model and the replica that served it, because the prefix cache lives on the server that read the prompt. It moves only if that replica is over the threshold or down.
