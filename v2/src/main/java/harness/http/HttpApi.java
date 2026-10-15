@@ -10,14 +10,12 @@ import com.sun.net.httpserver.HttpServer;
 import harness.agent.Agent;
 import harness.agent.AgentLoader;
 import harness.core.Conversation;
-import harness.core.Orchestrator;
 import harness.core.RelaySummarizer;
 import harness.core.Span;
-import harness.model.RuleBasedLLM;
 import harness.store.Job;
+import harness.store.RunQueue;
 import harness.store.RunStore;
 import harness.tools.Tool;
-import harness.tools.ToolCaller;
 import harness.tools.ToolLoader;
 import harness.tools.ToolRegistry;
 import java.io.IOException;
@@ -26,18 +24,19 @@ import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.time.Duration;
 import java.util.List;
 import java.util.Optional;
 import java.util.concurrent.Executors;
 
 /**
  * The harness as a small service on the JDK's own HttpServer, JSON in and out:
- * GET /agents, GET and PUT /agents/{name}, GET /tools, POST /runs (202 with the job id at
- * once, the loop runs on a virtual thread), GET /runs/{id} (the job row, its steps, the
- * answer when DONE) and GET /runs/{id}/events (Server-Sent Events: every stored step from
- * Last-Event-ID on, then live until the job ends). Agents and tools stay files on disk;
- * runs live in the store. A client that goes away does not stop its run.
+ * GET /agents, GET and PUT /agents/{name}, GET /tools, POST /runs (the job row and its
+ * queue message, 202 with the job id at once; a worker runs the loop), GET /runs/{id} (the
+ * job row, its steps, the answer when DONE), GET /runs/{id}/events (Server-Sent Events:
+ * every stored step from Last-Event-ID on, then live until the job ends) and GET /dlq (the
+ * jobs the workers gave up on). Agents and tools stay files on disk; runs live in the
+ * store, so this process does not care which worker ran the loop, and a client that goes
+ * away does not stop its run.
  */
 public class HttpApi {
 
@@ -49,13 +48,15 @@ public class HttpApi {
     private final Path agentsDir;
     private final Path toolsDir;
     private final RunStore store;
+    private final RunQueue queue;
     private HttpServer server;
     private volatile boolean stopped;
 
-    public HttpApi(Path agentsDir, Path toolsDir, RunStore store) {
+    public HttpApi(Path agentsDir, Path toolsDir, RunStore store, RunQueue queue) {
         this.agentsDir = agentsDir;
         this.toolsDir = toolsDir;
         this.store = store;
+        this.queue = queue;
     }
 
     /** Binds localhost:port (0 = any free port) and serves each request on a virtual thread. */
@@ -121,6 +122,9 @@ public class HttpApi {
         if (parts.length == 3 && runs && parts[2].equals("events")) {
             return method.equals("GET") ? events(exchange, parts[1]) : methodNotAllowed(method, path);
         }
+        if (parts.length == 1 && parts[0].equals("dlq")) {
+            return method.equals("GET") ? deadLetters(exchange) : methodNotAllowed(method, path);
+        }
         throw new HttpError(404, "no endpoint " + method + " " + path);
     }
 
@@ -184,28 +188,14 @@ public class HttpApi {
 
     // --- runs: rows in the store ---
 
-    /** Writes the job row, answers 202 with its id, and runs the loop on a thread of its own. */
+    /** Writes the job row and its queue message, answers 202 with the id; a worker runs the loop. */
     private int startRun(HttpExchange exchange) throws IOException {
         JsonNode body = readJson(exchange);
         String agentName = text(body, "agent");
         String question = text(body, "question");
         Agent agent = findAgent(agentName).orElseThrow(() -> new HttpError(400, "no agent named " + agentName));
-        String jobId = store.newRun(agent.name(), question);
-        Thread.ofVirtual().name("run-" + jobId).start(() -> runJob(agent, jobId, question));
-        return send(exchange, 202, JSON.createObjectNode().put("jobId", jobId).put("status", Job.Status.RUNNING.name()));
-    }
-
-    /** The loop: the Orchestrator sets the job DONE or FAILED when it ends, whoever is still listening. */
-    private void runJob(Agent agent, String jobId, String question) {
-        try {
-            ToolRegistry registry = ToolLoader.load(toolsDir);
-            ToolCaller toolCaller = new ToolCaller(registry, agent.toolNames(), Duration.ofMillis(agent.toolTimeoutMs()));
-            new Orchestrator(agent, registry, new RuleBasedLLM(), toolCaller, new RelaySummarizer(), store, span -> { })
-                    .start(jobId, question);
-        } catch (RuntimeException e) {
-            store.setStatus(jobId, Job.Status.FAILED);
-            System.err.println("run " + jobId + " failed: " + e);
-        }
+        String jobId = queue.submit(agent.name(), question);
+        return send(exchange, 202, JSON.createObjectNode().put("jobId", jobId).put("status", Job.Status.QUEUED.name()));
     }
 
     /** The job row, its steps, and the answer once the job is DONE. */
@@ -220,11 +210,18 @@ public class HttpApi {
         return send(exchange, 200, reply);
     }
 
+    /** The dead-letter list: the job rows the queue gave up on (status DEAD), oldest first. */
+    private int deadLetters(HttpExchange exchange) throws IOException {
+        return send(exchange, 200, JSON.valueToTree(store.withStatus(Job.Status.DEAD)));
+    }
+
     /**
      * Server-Sent Events. Every stored step after Last-Event-ID (or ?after=N) goes out at
-     * once, id = the step number; then the store is polled until the job is DONE or FAILED,
-     * and a final "done" event carries the answer. The status is read before the rows, so
-     * when it says the job ended, every row is already in hand.
+     * once, id = the step number; then the store is polled until the job is DONE, FAILED
+     * or DEAD, and a final "done" event carries the answer. The status is read before the
+     * rows, so when it says the job ended, every row is already in hand. The rows come
+     * from the store, so it does not matter which worker wrote them, or whether one died
+     * and another took over.
      */
     private int events(HttpExchange exchange, String id) throws IOException {
         requireJob(id);
@@ -240,7 +237,7 @@ public class HttpApi {
                     after = row.step();
                 }
                 out.flush();
-                if (job.status() != Job.Status.RUNNING) {
+                if (job.status().ended()) {
                     ObjectNode done = JSON.createObjectNode().put("jobId", id).put("status", job.status().name());
                     if (job.status() == Job.Status.DONE) {
                         done.put("answer", answer(job, store.load(id)));

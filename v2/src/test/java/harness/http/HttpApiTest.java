@@ -6,8 +6,10 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import harness.store.RunQueue;
 import harness.store.SqliteRunStore;
 import harness.tools.ToolLoader;
+import harness.worker.Worker;
 import java.io.BufferedReader;
 import java.io.IOException;
 import java.io.InputStream;
@@ -28,7 +30,8 @@ import org.junit.jupiter.api.io.TempDir;
 
 /**
  * Every endpoint through java.net.http.HttpClient on a random port, over a temp SQLite file
- * and a copy of agents/ (PUT writes there), with the real tools/ (read only).
+ * and a copy of agents/ (PUT writes there), with the real tools/ (read only). The server
+ * only queues a job; a worker thread over the same file runs it when a test starts one.
  */
 class HttpApiTest {
 
@@ -40,6 +43,9 @@ class HttpApiTest {
     Path dir;
     private Path agents;
     private SqliteRunStore store;
+    private RunQueue queue;
+    private Worker worker;
+    private Thread workerThread;
     private HttpApi api;
     private String base;
     private final HttpClient client = HttpClient.newHttpClient();
@@ -52,16 +58,28 @@ class HttpApiTest {
             Files.copy(Path.of("agents", name), agents.resolve(name));
         }
         store = new SqliteRunStore(dir.resolve("harness.db"));
-        api = new HttpApi(agents, Path.of("tools"), store);
+        queue = new RunQueue(store);
+        api = new HttpApi(agents, Path.of("tools"), store, queue);
         api.start(0);
         base = "http://localhost:" + api.port();
     }
 
     @AfterEach
-    void stop() {
+    void stop() throws InterruptedException {
         ToolLoader.SLOW_LOOKUP_MS = 0;
         api.stop();
+        if (worker != null) {
+            worker.stop();
+            workerThread.join();
+        }
         store.close();
+    }
+
+    /** A worker over the same temp file, polling fast, on its own thread: the process that runs the loop. */
+    private void startWorker() {
+        worker = new Worker(agents, Path.of("tools"), store, queue, "test-worker", 2000);
+        worker.pollMs(20);
+        workerThread = Thread.ofVirtual().start(worker::loop);
     }
 
     @Test
@@ -119,21 +137,31 @@ class HttpApiTest {
     }
 
     @Test
-    void postRunsAnswersAtOnceAndTheJobFinishesOnItsOwn() throws Exception {
+    void postRunsQueuesTheJobAtOnceAndAWorkerFinishesIt() throws Exception {
         HttpResponse<String> accepted = post("/runs", "{\"agent\":\"support\",\"question\":\"" + QUESTION + "\"}");
         assertEquals(202, accepted.statusCode());
         JsonNode ticket = JSON.readTree(accepted.body());
         String id = ticket.get("jobId").asText();
         assertTrue(id.matches("r-[0-9a-f]{4}"), id);
-        assertEquals("RUNNING", ticket.get("status").asText());
+        assertEquals("QUEUED", ticket.get("status").asText());
 
+        JsonNode queued = JSON.readTree(get("/runs/" + id).body());
+        assertEquals("QUEUED", queued.get("status").asText(), "no worker yet: the server does not run the loop");
+        assertEquals(0, queued.get("steps").size());
+        assertFalse(queued.has("answer"));
+        assertEquals(1, queue.size());
+
+        startWorker();
         JsonNode run = awaitDone(id);
         assertEquals(id, run.get("conversationId").asText());
         assertEquals("support", run.get("agent").asText());
         assertEquals(QUESTION, run.get("question").asText());
+        assertEquals("test-worker", run.get("claimedBy").asText());
+        assertEquals(1, run.get("attempts").asInt());
         assertEquals(List.of("LLM", "TOOL", "LLM"), run.get("steps").findValuesAsText("kind"));
         assertEquals(List.of(1, 2, 3), run.get("steps").findValues("step").stream().map(JsonNode::asInt).toList());
         assertEquals(ANSWER, run.get("answer").asText());
+        assertEquals(0, queue.size(), "acked");
 
         assertEquals(404, get("/runs/r-0000").statusCode());
         assertEquals(400, post("/runs", "{\"agent\":\"nope\",\"question\":\"q\"}").statusCode());
@@ -142,6 +170,7 @@ class HttpApiTest {
 
     @Test
     void eventsReplayFromLastEventIdAndEndWithDone() throws Exception {
+        startWorker();
         String id = JSON.readTree(post("/runs", "{\"agent\":\"support\",\"question\":\"" + QUESTION + "\"}").body()).get("jobId").asText();
         awaitDone(id);
 
@@ -169,6 +198,7 @@ class HttpApiTest {
     @Test
     void eventsFollowALiveRunAndADisconnectDoesNotStopIt() throws Exception {
         ToolLoader.SLOW_LOOKUP_MS = 300;
+        startWorker();
         String id = JSON.readTree(post("/runs", "{\"agent\":\"support\",\"question\":\"" + QUESTION + "\"}").body()).get("jobId").asText();
 
         HttpResponse<InputStream> live = client.send(HttpRequest.newBuilder(uri("/runs/" + id + "/events")).build(),
@@ -185,6 +215,32 @@ class HttpApiTest {
         assertEquals(3, run.get("steps").size(), "the run finished although its listener left");
         assertEquals(ANSWER, run.get("answer").asText());
         assertEquals(Arrays.asList("1", "2", "3", null), events(get("/runs/" + id + "/events").body()).stream().map(Event::id).toList());
+    }
+
+    @Test
+    void theDeadLetterListIsTheJobsTheQueueGaveUpOn() throws Exception {
+        assertEquals(0, JSON.readTree(get("/dlq").body()).size(), "nothing dead yet");
+        String id = JSON.readTree(post("/runs", "{\"agent\":\"support\",\"question\":\"" + QUESTION + "\"}").body()).get("jobId").asText();
+        for (int receive = 1; receive <= RunQueue.DEFAULT_MAX_RECEIVES; receive++) {
+            assertFalse(queue.receive(0).orElseThrow().dead(), "receive " + receive + " is delivered (and its worker dies at once)");
+        }
+        assertTrue(queue.receive(0).orElseThrow().dead(), "one receive too many");
+
+        HttpResponse<String> dlq = get("/dlq");
+        assertEquals(200, dlq.statusCode());
+        JsonNode dead = JSON.readTree(dlq.body());
+        assertEquals(1, dead.size());
+        assertEquals(id, dead.get(0).get("id").asText());
+        assertEquals("DEAD", dead.get(0).get("status").asText());
+        assertEquals(QUESTION, dead.get(0).get("question").asText());
+
+        JsonNode run = JSON.readTree(get("/runs/" + id).body());
+        assertEquals("DEAD", run.get("status").asText());
+        assertFalse(run.has("answer"));
+        List<Event> events = events(get("/runs/" + id + "/events").body());
+        assertEquals(List.of("done"), events.stream().map(Event::event).toList(), "the stream closes on a dead job");
+        assertEquals("DEAD", JSON.readTree(events.get(0).data()).get("status").asText());
+        assertEquals(405, send(HttpRequest.newBuilder(uri("/dlq")).DELETE().build()).statusCode());
     }
 
     // --- helpers ---

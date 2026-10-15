@@ -56,7 +56,9 @@ class SqliteRunStoreTest {
             assertEquals(runId, job.conversationId(), "one conversation per job today");
             assertEquals("support", job.agent());
             assertEquals("What is the status of order ORD-1?", job.question());
-            assertEquals(Job.Status.RUNNING, job.status(), "opened RUNNING");
+            assertEquals(Job.Status.QUEUED, job.status(), "opened QUEUED");
+            assertEquals(null, job.claimedBy(), "no worker yet");
+            assertEquals(0, job.attempts());
             assertTrue(job.createdAt() > 0 && job.updatedAt() == job.createdAt());
 
             store.setStatus(runId, Job.Status.DONE);
@@ -66,6 +68,44 @@ class SqliteRunStoreTest {
         try (SqliteRunStore again = new SqliteRunStore(file)) {
             assertEquals(List.of(llm, tool, cut), again.load(runId), "a fresh store over the same file reads it");
             assertEquals(Job.Status.DONE, again.job(runId).status());
+        }
+    }
+
+    @Test
+    void claimSetsRunningNamesTheWorkerAndCountsTheAttempt() {
+        try (SqliteRunStore store = new SqliteRunStore(dir.resolve("harness.db"))) {
+            String runId = store.newRun("support", "q");
+            assertEquals(1, store.claim(runId, "12345"));
+            Job claimed = store.job(runId);
+            assertEquals(Job.Status.RUNNING, claimed.status());
+            assertEquals("12345", claimed.claimedBy());
+            assertEquals(1, claimed.attempts());
+
+            assertEquals(2, store.claim(runId, "12346"), "the next worker: one more attempt");
+            assertEquals("12346", store.job(runId).claimedBy());
+
+            store.setStatus(runId, Job.Status.DEAD);
+            String other = store.newRun("support", "other");
+            assertEquals(List.of(runId), store.withStatus(Job.Status.DEAD).stream().map(Job::id).toList());
+            assertEquals(List.of(other), store.withStatus(Job.Status.QUEUED).stream().map(Job::id).toList());
+            assertEquals(List.of(), store.withStatus(Job.Status.DONE));
+        }
+    }
+
+    @Test
+    void aFileFromBeforeTheWorkerGetsTheTwoColumnsAdded() throws Exception {
+        Path file = dir.resolve("old.db");
+        try (Connection db = DriverManager.getConnection("jdbc:sqlite:" + file); Statement statement = db.createStatement()) {
+            statement.execute("CREATE TABLE job (id TEXT PRIMARY KEY, conversation_id TEXT, agent TEXT, question TEXT,"
+                    + " status TEXT, created_at INTEGER, updated_at INTEGER)");
+            statement.execute("INSERT INTO job VALUES ('r-0001', 'r-0001', 'support', 'q', 'DONE', 1, 2)");
+        }
+        try (SqliteRunStore store = new SqliteRunStore(file)) {
+            Job old = store.job("r-0001");
+            assertEquals(Job.Status.DONE, old.status());
+            assertEquals(null, old.claimedBy());
+            assertEquals(0, old.attempts(), "the added column defaults to 0 for old rows");
+            assertEquals(1, store.claim("r-0001", "12345"), "attempts + 1 works on an old row");
         }
     }
 

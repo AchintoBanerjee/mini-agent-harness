@@ -41,6 +41,24 @@ class InMemoryRunStoreTest {
         assertThrows(IllegalArgumentException.class, () -> store.append("r-nope", row("r-nope", 1, Span.Kind.NOTE)));
     }
 
+    @Test
+    void theJobRowFollowsTheWorkers() {
+        String runId = store.newRun("support", "q");
+        assertEquals(Job.Status.QUEUED, store.job(runId).status());
+        assertEquals(0, store.job(runId).attempts());
+
+        assertEquals(1, store.claim(runId, "worker-a"));
+        assertEquals(2, store.claim(runId, "worker-b"));
+        Job job = store.job(runId);
+        assertEquals(Job.Status.RUNNING, job.status());
+        assertEquals("worker-b", job.claimedBy());
+        assertEquals(2, job.attempts());
+
+        store.setStatus(runId, Job.Status.DEAD);
+        assertEquals(List.of(runId), store.withStatus(Job.Status.DEAD).stream().map(Job::id).toList());
+        assertEquals(List.of(), store.withStatus(Job.Status.RUNNING));
+    }
+
     private static Span row(String runId, int step, Span.Kind kind) {
         return new Span(runId, step, 1, (step + 1) / 2, kind, kind + " " + step, "", Span.Status.OK, 0, Map.of());
     }

@@ -98,7 +98,7 @@ must run --agent chaos "Please hang while checking ORD-1"
 header "the dedupe run: the same question twice in one conversation runs the handler once"
 must run --agent support "status of order ORD-1" "status of order ORD-1 again"
 
-header "the HTTP API: serve, POST /runs, GET /runs/{id}, the SSE stream, PUT /agents/{name}"
+header "the HTTP API: serve and a worker, POST /runs, GET /runs/{id}, the SSE stream, PUT /agents/{name}"
 server_log=$(mktemp -t harness-serve)
 show serve --port 0
 $JAVA -cp "$CP" harness.cli.Main serve --port 0 > "$server_log" 2>&1 &
@@ -108,13 +108,20 @@ base=$(sed -n 's/^listening on \(http:[^ ]*\).*/\1/p' "$server_log")
 if [ -z "$base" ]; then echo "the server did not start:"; cat "$server_log"; kill "$server_pid" 2>/dev/null; exit 1; fi
 grep '^listening on' "$server_log"
 echo "(the server stays in the background; --port 0 picked a free port, the manual uses 8080)"
+worker_log=$(mktemp -t harness-worker)
+show worker
+$JAVA -cp "$CP" harness.cli.Main worker > "$worker_log" 2>&1 &
+worker_pid=$!
+for _ in $(seq 1 50); do grep -q '^worker pid' "$worker_log" && break; sleep 0.1; done
+grep '^worker pid' "$worker_log"
+echo "(the worker stays in the background too: the server only queues jobs, this process runs them)"
 
 echo
 ticket=$(curl_show -s -X POST "$base/runs" -d '{"agent":"support","question":"What is the status of order ORD-1?"}')
 printf '%s\n' "$ticket"
 job_id=$(printf '%s\n' "$ticket" | sed -n 's/.*"jobId" *: *"\(r-[0-9a-f]*\)".*/\1/p')
-if [ -z "$job_id" ]; then echo "no job id in the POST reply"; kill "$server_pid"; exit 1; fi
-echo "(202 came back before the loop ran; one second later the job row says DONE and the steps are there:)"
+if [ -z "$job_id" ]; then echo "no job id in the POST reply"; kill "$server_pid" "$worker_pid"; exit 1; fi
+echo "(202 came back at once with the job QUEUED; the worker took it, and one second later the job row says DONE, who ran it, and the steps:)"
 sleep 1
 curl_show -s "$base/runs/$job_id"
 
@@ -140,11 +147,58 @@ echo '$ cat agents/returns.json'
 cat agents/returns.json
 
 echo
+echo "(the worker's own log: it received both jobs, ran them, acked them; the server ran no loop)"
+kill "$worker_pid"
+wait "$worker_pid" 2>/dev/null
+sed -n '/^worker pid/,$p' "$worker_log"
+rm -f "$worker_log" agents/returns.json
+echo "(worker stopped; agents/returns.json removed again so the agent list is back to three; the server stays up for the next section)"
+
+header "durability: the queue, the lease, the dead worker"
+echo "(no worker is running now. submit writes the job row QUEUED and its queue message, and comes back with the id:)"
+sub_out=$(harness submit --agent support "What is the status of order ORD-1?")
+printf '%s\n' "$sub_out"
+job_id=$(printf '%s\n' "$sub_out" | sed -n 's/^submitted \(r-[0-9a-f]*\) .*/\1/p')
+if [ -z "$job_id" ]; then echo "no job id in the submit output"; kill "$server_pid"; exit 1; fi
+curl_show -s "$base/runs/$job_id"
+echo "(a worker takes it with a 2000 ms lease and dies right after its 2nd row is persisted: exit 3, no ack)"
+crash_out=$(harness worker --once --crash-after 2 --visibility-ms 2000)
+status=$?
+printf '%s\n' "$crash_out"
+if [ "$status" -ne 3 ]; then echo "expected exit 3 from the simulated crash, got $status"; kill "$server_pid"; exit 1; fi
+echo "(process exited with code $status; the job row says RUNNING, the message is still queued but hidden until the lease runs out)"
+echo '$ sleep 2'
+sleep 2
+echo "(the lease has run out, so the next worker receives the same message again and resumes from the last saved step:)"
+must worker --once
+echo "(the API reads the same rows, whoever wrote them: DONE, attempt 2, claimed by the second worker's pid, all four steps)"
+curl_show -s "$base/runs/$job_id"
+
+echo
+echo "(the dead-letter case: a job whose worker dies after its first row every time; leases of 1000 ms, a second of sleep so each runs out)"
+sub_out=$(harness submit --agent support "Where is my shipment SHP-1?")
+printf '%s\n' "$sub_out"
+dead_id=$(printf '%s\n' "$sub_out" | sed -n 's/^submitted \(r-[0-9a-f]*\) .*/\1/p')
+if [ -z "$dead_id" ]; then echo "no job id in the submit output"; kill "$server_pid"; exit 1; fi
+for attempt in 1 2 3; do
+    crash_out=$(harness worker --once --crash-after 1 --visibility-ms 1000)
+    status=$?
+    printf '%s\n' "$crash_out"
+    if [ "$status" -ne 3 ]; then echo "expected exit 3 from the simulated crash, got $status"; kill "$server_pid"; exit 1; fi
+    echo '$ sleep 1'
+    sleep 1
+done
+echo "(three receives, three dead workers; max receives is 3, so the fourth receive does not deliver the message: it dead-letters the job)"
+must worker --once
+curl_show -s "$base/dlq"
+curl_show -s "$base/runs/$dead_id"
+
+echo
 echo "(the server's own log, one line per request:)"
 kill "$server_pid"
 wait "$server_pid" 2>/dev/null
 sed -n '/^listening on/,$p' "$server_log"
-rm -f "$server_log" agents/returns.json
-echo "(server stopped; agents/returns.json removed again so the agent list is back to three)"
+rm -f "$server_log"
+echo "(server stopped)"
 
 printf '\ndemo complete\n'

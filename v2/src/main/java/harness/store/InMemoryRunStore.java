@@ -19,7 +19,7 @@ public class InMemoryRunStore implements RunStore {
             runId = RunStore.newId();
         }
         long now = System.currentTimeMillis();
-        jobs.put(runId, new Job(runId, runId, agent, question, Job.Status.RUNNING, now, now));
+        jobs.put(runId, new Job(runId, runId, agent, question, Job.Status.QUEUED, null, 0, now, now));
         runs.put(runId, new ArrayList<>());
         return runId;
     }
@@ -48,6 +48,24 @@ public class InMemoryRunStore implements RunStore {
     @Override
     public void setStatus(String runId, Job.Status status) {
         jobs.put(runId, job(runId).with(status, System.currentTimeMillis()));
+    }
+
+    @Override
+    public int claim(String runId, String claimedBy) {
+        Job claimed = job(runId).claimedBy(claimedBy, System.currentTimeMillis());
+        jobs.put(runId, claimed);
+        return claimed.attempts();
+    }
+
+    @Override
+    public List<Job> withStatus(Job.Status status) {
+        List<Job> matching = new ArrayList<>();
+        for (Job job : jobs.values()) {
+            if (job.status() == status) {
+                matching.add(job);
+            }
+        }
+        return matching;
     }
 
     private List<Span> rows(String runId) {

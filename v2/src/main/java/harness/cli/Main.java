@@ -3,6 +3,7 @@ package harness.cli;
 import harness.agent.Agent;
 import harness.agent.AgentLoader;
 import harness.core.ConsoleListener;
+import harness.core.CrashAfter;
 import harness.core.Orchestrator;
 import harness.core.RelaySummarizer;
 import harness.core.RunListener;
@@ -14,12 +15,14 @@ import harness.eval.GoldenCase;
 import harness.http.HttpApi;
 import harness.model.RuleBasedLLM;
 import harness.model.ToolCall;
+import harness.store.RunQueue;
 import harness.store.SqliteRunStore;
 import harness.tools.Tool;
 import harness.tools.ToolCaller;
 import harness.tools.ToolLoader;
 import harness.tools.ToolRegistry;
 import harness.tools.ToolResult;
+import harness.worker.Worker;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -32,13 +35,16 @@ import java.util.function.Supplier;
 /**
  * Command line, run from v2/: agents · tools · run --agent X "question" ["question" ...]
  * [--slow] [--crash-after N] [--crash-before-persist] · resume runId · replay runId [fromStep]
- * · eval [evals/golden.json] · serve [--port 8080]. Args are parsed by hand. Agents and
- * tools are read from agents/ and tools/; every run is written to harness.db (SQLite), the
- * same file the HTTP server uses. The two crash flags simulate a process dying mid-run so
- * that resume has something to pick up; --slow gives every lookup 300 ms of simulated
- * latency so that tools running together can be seen to overlap. Tool calls are gated by
- * the agent: only its listed tools run, each within its toolTimeoutMs. eval scores the
- * golden set in memory and prints one row per case and the totals.
+ * · eval [evals/golden.json] · serve [--port 8080] · submit --agent X "question" · worker
+ * [--once] [--visibility-ms 2000] [--crash-after N] [--max-receives 3]. Args are parsed by
+ * hand. Agents and tools are read from agents/ and tools/; every run is written to
+ * harness.db (SQLite), the same file the HTTP server and the workers use. run is the loop
+ * in this process; submit puts a job on the queue and worker takes jobs off it. The crash
+ * flags simulate a process dying mid-run so that resume (or the next worker) has something
+ * to pick up; --slow gives every lookup 300 ms of simulated latency so that tools running
+ * together can be seen to overlap. Tool calls are gated by the agent: only its listed
+ * tools run, each within its toolTimeoutMs. eval scores the golden set in memory and
+ * prints one row per case and the totals.
  */
 public class Main {
 
@@ -46,7 +52,7 @@ public class Main {
     static final Path TOOLS = Path.of("tools");
     static final Path DB = SqliteRunStore.DEFAULT_FILE;
     static final Path GOLDEN = Path.of("evals", "golden.json");
-    static final int CRASH_EXIT = 3;
+    static final int CRASH_EXIT = CrashAfter.EXIT_CODE;
     static final int DEFAULT_PORT = 8080;
 
     public static void main(String[] args) {
@@ -62,6 +68,8 @@ public class Main {
             case "replay" -> replay(rest);
             case "eval" -> eval(rest);
             case "serve" -> serve(rest);
+            case "submit" -> submit(rest);
+            case "worker" -> worker(rest);
             default -> usage();
         }
     }
@@ -112,7 +120,9 @@ public class Main {
         Agent agent = findAgent(agentName);
         ToolRegistry registry = ToolLoader.load(TOOLS);
         try (SqliteRunStore store = new SqliteRunStore(DB)) {
-            RunListener listener = crashAfter > 0 ? crashAfter(crashAfter) : new ConsoleListener();
+            RunListener listener = crashAfter > 0
+                    ? new CrashAfter(crashAfter, new ConsoleListener(), () -> System.exit(CRASH_EXIT))
+                    : new ConsoleListener();
             Orchestrator[] holder = new Orchestrator[1];
             ToolCaller toolCaller = crashBeforePersist
                     ? crashBeforePersist(registry, agent, () -> holder[0].conversation().id())
@@ -182,7 +192,7 @@ public class Main {
         System.out.println(EvalRunner.footer(results));
     }
 
-    /** The HTTP API on localhost: agents/, tools/ and harness.db behind it. Runs until killed. */
+    /** The HTTP API on localhost: agents/, tools/ and harness.db behind it; a worker runs the jobs. Runs until killed. */
     static void serve(List<String> args) {
         int port = DEFAULT_PORT;
         for (int i = 0; i < args.size(); i++) {
@@ -192,13 +202,15 @@ public class Main {
                 fail("usage: serve [--port 8080]   (--port 0 picks a free port)");
             }
         }
-        HttpApi api = new HttpApi(AGENTS, TOOLS, new SqliteRunStore(DB));
+        SqliteRunStore store = new SqliteRunStore(DB);
+        HttpApi api = new HttpApi(AGENTS, TOOLS, store, new RunQueue(store));
         try {
             api.start(port);
         } catch (IOException e) {
             fail("cannot listen on port " + port + ": " + e.getMessage());
         }
-        System.out.println("listening on http://localhost:" + api.port() + " · agents/ tools/ " + DB + " · ctrl-c stops it");
+        System.out.println("listening on http://localhost:" + api.port() + " · agents/ tools/ " + DB
+                + " · POST /runs queues a job for a worker · ctrl-c stops it");
         try {
             Thread.currentThread().join();
         } catch (InterruptedException e) {
@@ -206,17 +218,69 @@ public class Main {
         }
     }
 
-    /** Simulated crash: row N is in the store and on screen, then the process is gone. */
-    static RunListener crashAfter(int n) {
-        ConsoleListener console = new ConsoleListener();
-        return span -> {
-            console.on(span);
-            if (span.step() == n) {
-                System.out.println("crash: exit " + CRASH_EXIT + " right after row " + n + " of run " + span.run()
-                        + " was persisted (simulated) · handler calls: " + ToolLoader.handlerCalls());
-                System.exit(CRASH_EXIT);
+    /** Puts one question on the queue as a job, QUEUED, and prints its id; a worker runs it. */
+    static void submit(List<String> args) {
+        String agentName = null;
+        String question = null;
+        for (int i = 0; i < args.size(); i++) {
+            String arg = args.get(i);
+            if (arg.equals("--agent") && i + 1 < args.size()) {
+                agentName = args.get(++i);
+            } else if (arg.startsWith("--") || question != null) {
+                fail("usage: submit --agent <name> \"question\"");
+            } else {
+                question = arg;
             }
-        };
+        }
+        if (agentName == null || question == null) {
+            fail("usage: submit --agent <name> \"question\"");
+        }
+        Agent agent = findAgent(agentName);
+        try (SqliteRunStore store = new SqliteRunStore(DB)) {
+            String jobId = new RunQueue(store).submit(agent.name(), question);
+            System.out.println("submitted " + jobId + " · " + store.job(jobId).status() + " in " + DB
+                    + " · agent " + agent.name() + " · \"" + question + "\"");
+        }
+    }
+
+    /**
+     * Takes jobs off the queue and runs them, resuming any a dead worker left behind.
+     * --once handles one message and exits (1 when there was none); otherwise it polls
+     * every 500 ms until killed. --crash-after N is the simulated death: exit 3 right
+     * after row N is persisted, without acking.
+     */
+    static void worker(List<String> args) {
+        boolean once = false;
+        long visibilityMs = Worker.DEFAULT_VISIBILITY_MS;
+        int crashAfter = 0;
+        int maxReceives = RunQueue.DEFAULT_MAX_RECEIVES;
+        for (int i = 0; i < args.size(); i++) {
+            String arg = args.get(i);
+            if (arg.equals("--once")) {
+                once = true;
+            } else if (arg.equals("--visibility-ms") && i + 1 < args.size()) {
+                visibilityMs = positive(args.get(++i), "--visibility-ms");
+            } else if (arg.equals("--crash-after") && i + 1 < args.size()) {
+                crashAfter = positive(args.get(++i), "--crash-after");
+            } else if (arg.equals("--max-receives") && i + 1 < args.size()) {
+                maxReceives = positive(args.get(++i), "--max-receives");
+            } else {
+                fail("usage: worker [--once] [--visibility-ms 2000] [--crash-after N] [--max-receives 3]");
+            }
+        }
+        String pid = String.valueOf(ProcessHandle.current().pid());
+        try (SqliteRunStore store = new SqliteRunStore(DB)) {
+            Worker worker = new Worker(AGENTS, TOOLS, store, new RunQueue(store, maxReceives), pid, visibilityMs);
+            worker.crashAfter(crashAfter);
+            System.out.println("worker pid " + pid + " · lease " + visibilityMs + " ms · max receives " + maxReceives
+                    + (once ? " · once" : " · polling every " + Worker.POLL_MS + " ms, ctrl-c stops it") + " · " + DB);
+            if (!once) {
+                worker.loop();
+            } else if (!worker.once()) {
+                System.out.println("nothing to receive");
+                System.exit(1);
+            }
+        }
     }
 
     /** The agent's tool list and per-call timeout gate every call. */
@@ -295,7 +359,8 @@ public class Main {
 
     static void usage() {
         fail("usage: agents | tools | run --agent <name> \"question\" [\"question\" ...] [--slow] [--crash-after N] [--crash-before-persist]"
-                + " | resume <runId> | replay <runId> [fromStep] | eval [evals/golden.json] | serve [--port 8080]");
+                + " | resume <runId> | replay <runId> [fromStep] | eval [evals/golden.json] | serve [--port 8080]"
+                + " | submit --agent <name> \"question\" | worker [--once] [--visibility-ms 2000] [--crash-after N] [--max-receives 3]");
     }
 
     static void fail(String message) {
