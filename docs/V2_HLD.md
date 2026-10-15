@@ -6,7 +6,7 @@ The harness as a small service: you call it over HTTP, its state lives in one SQ
 
 ## What v2 is
 
-![v2 HLD](v2-hld.svg)
+![v2 HLD](hld.svg)
 
 - **End users** ask a question and get a job id back at once; the answer follows as a stream.
 - **API layer** is the one face: `POST /runs` writes the turn row and returns its id; `GET /turns/{id}` reads it; `GET /turns/{id}/events` streams it.
