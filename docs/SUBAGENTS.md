@@ -2,7 +2,7 @@
 
 [The issue](#the-issue) · [The choices](#the-choices) · [Agent as a tool](#agent-as-a-tool) · [The implementation](#the-implementation) · [Proof](#proof) · [The DAG](#the-dag)
 
-A run can hand a question to another agent and get the answer back as a tool result: the child is the same loop class, run inside the tool call, its rows in the same turn (job id). Every output below is pasted from `demo-output.txt`, which `./demo.sh` writes.
+A run can hand a question to another agent and get the answer back as a tool result: the child is the same loop class, run inside the tool call, its rows in the same turn (job id). There are more multi-agent patterns in the frameworks than the three on this page; these are the ones I have run in production at scale, and they cover most of what teams need. Every output below is pasted from `demo-output.txt`, which `./demo.sh` writes.
 
 ## The issue
 
@@ -32,7 +32,7 @@ Things to watch for:
 - an agent that delegates to itself (the depth cap);
 - a tree that burns passes (the shared budget).
 
-The scar, in three lines. We picked a framework's group chat as the default without running the cost math. I went deeper: up to twice the LLM calls, and every agent seeing the whole monologue; I had not researched the pattern enough at the start. I went to leadership, no more teams on it; the known paths moved onto our in-house DAG and agent as a tool for the rest, about 30 to 40 percent off median latency, and a missed release, caught before production.
+We picked a framework's group chat as our first multi-agent default, and I had not researched the pattern enough. One release in, with teams building on it, the numbers came back: up to twice the model calls, and every agent reading the whole conversation. I went to leadership and stopped new teams on it. The paths we knew moved onto our DAG, the rest onto agent as a tool. Median latency on the migrated paths dropped by about a third. The cost was one missed release for the teams on it, caught before production.
 
 ## Agent as a tool
 
@@ -270,7 +270,6 @@ done r-000b · 9 spans · 71 ms · DONE in harness.db · acked · handler calls:
 
 ## The DAG
 
-The other pattern, for when the sequence is known. Not implemented here; the design in four sentences.
+The other pattern, for when the sequence is known. Most of the time you do know your workflow, and workflows can be long, so scaling them is the concern. The DAG holds the flow and the model never decides it: the routing is the edges, zero tokens, replayable, testable.
 
-Most of the time you know your workflow, and workflows can be long, so scaling them is the concern. The DAG holds the flow and the model never decides it: the routing is the edges, zero tokens, replayable. The engine I would use is Temporal: durable, replayable, the long workflow survives its worker. Not implemented here, but a strong part of an agent platform.
-
+For this proof of concept I built agent as a tool, because the example's sequence is not known up front and it fits the loop we already have. The DAG is just as implementable, and it is better implemented on a workflow engine such as Temporal than hand-rolled: durable, replayable, a long workflow survives its worker. Which of the two a platform leans on is a choice to validate and weigh against its own workloads, not a ranking; my platform ended up with both.
