@@ -26,8 +26,8 @@
 
 - Every question in a conversation was slower and more expensive than the one before.
 - Replaying one recorded conversation and plotting latency and tokens per turn gave a rising line. A model problem is flat, so the problem was in the platform.
-- The reorder was done once, in the shared context builder; no team changed its agent.
-- The cached-token count, which the provider did not return at first, was obtained and reported next to cost.
+- We reordered the prompt once, in the shared context builder. No team had to change its agent.
+- The provider did not return the cached-token count at first. We got it added and reported it next to cost.
 - With the other context fixes, the long-conversation turn went from twenty or thirty seconds to about six, and context to about a tenth, with function held on the golden set.
 - Trim, a window and dedupe shipped; summary compaction at checkpoints is the direction.
 
@@ -84,17 +84,19 @@
 - In the broadcast shapes, a supervisor or a group chat on one shared transcript, every agent's tool calls and reasoning land in the classifier's context and in every sibling's. Nobody needs it: the classifier needs enough to route, a sibling needs another agent's answer at most.
 - It hurts twice. Cost: each hop re-sends the whole growing transcript to everyone, about two model calls per hop, growth with the square of the hops. Quality: an agent reading another agent's half-finished reasoning gets derailed.
 - The fix is isolation by construction, not prompt discipline: each agent runs in its own context and sees only what it is given; only answers cross the boundary, never monologue. The lighter pattern has none of this: agent as a tool, where the child gets the goal and its own tools and the parent gets the answer.
-- The DAG is not immune. Usually a model node at the top routes to the right branch, or a plain rule does, and the nodes pass their results along one shared conversation. If a node's tool calls and a child agent's context ride along in that conversation, the router and every later node read all of it, and the leak is back by the side door. Each node gets its inputs and passes on its output only; its tool calls and its child's transcript stay inside the node. Watch it closely: it is the common way a clean DAG turns into a broadcast.
+- The DAG is not immune. Usually a model node at the top routes to the right branch, or a plain rule does, and the nodes pass their results along one shared conversation.
+- If a node's tool calls and a child agent's context ride along in that conversation, the router and every later node read all of it. The leak is back by the side door.
+- The rule: each node gets its inputs and passes on its output only; its tool calls and its child's transcript stay inside the node. Watch it closely: it is the common way a clean DAG turns into a broadcast.
 
 **Time and tokens**
 
 - Linear growth instead of quadratic; one model call per hop instead of two.
-- On my platform, in production, moving the known paths to a fixed plan cut median turn latency by about thirty to forty percent.
+- On my platform, in production, moving the known paths to the DAG cut median turn latency on those paths by about a third.
 
 **What I ran, on my platform in production**
 
-- The broadcast pattern was our first default; the leak was found in production.
-- New teams were stopped on it. Known paths moved to the DAG, the rest to agent as a tool.
+- Broadcast, a framework's group chat, was our first default. One release in, with teams building on it, the numbers came back.
+- I went to leadership and stopped new teams on it. The paths we knew moved onto our DAG, the rest onto agent as a tool.
 - The whole story is on the sub-agents page.
 
 ## What v2 implements
@@ -102,6 +104,6 @@
 | Optimization | In v2 | Design only |
 |---|---|---|
 | the prefix cache | the context is built append-only, and a repeat is a reference | the stable-to-volatile order and the cached-token column apply once a real model is behind the interface |
-| tools in hundreds | nothing: v2 has six tools, under the threshold | the search tool, the catalog, the index |
+| tools in hundreds | nothing: v2 has eight tools, under the threshold | the search tool, the catalog, the index |
 | dedupe of tool results | built: the `DEDUPED` span, "unchanged, see step k", the handler runs once | the stability rule per tool |
 | multi-agent leakage | built: agent as a tool, the child sees the goal and its tools, the parent gets the answer | |

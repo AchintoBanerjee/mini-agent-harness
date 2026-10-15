@@ -35,7 +35,7 @@ Page: [docs/DURABILITY.md](docs/DURABILITY.md)
 - The split: the HTTP face and the loop become two processes with a queue between them, so a turn outlives the request that created it. A turn is a message; the visibility timeout is the lease; the worker extends it on every saved step and acks last.
 - A dead worker's message comes back by itself; the next worker loads the saved rows and continues, mid-chain, without asking the model again for a decision it has.
 - The contract: saved steps run once, the one call in flight at a crash at least once, so tool writes are idempotent on the key the harness gives them. Temporal is the step up; it was never evaluated, and the shape scoped here is its shape.
-- What the POC runs: one jar, two processes on one laptop, one SQLite file, the queue table standing in for SQS. Not containers.
+- What the POC runs: one build, two processes on one laptop, one SQLite file, the queue table standing in for SQS. Not containers.
 
 ## 5 · Scaling
 
@@ -43,14 +43,14 @@ Page: [docs/SCALING.md](docs/SCALING.md)
 
 - The pods scale on load and on queue depth; nothing new there.
 - The persistent connection: the queue cut the line between the pod holding the client and the pod running the turn. The loop is the producer of the run's stream; a Redis Stream per job id carries it to whichever API pod holds the connection, with replay from the last id; the store is the fallback. v2 has the same shape on one machine.
-- The GPU, the one thing that does not autoscale: a governor in front of the shared model with a fair share per tenant, the room lent only while it is substantial, and a saturation measure calculated from calls and tokens because the provider's number comes late.
+- The GPU, the one thing that does not autoscale: a governor in front of the shared model. On my platform I built the meter, saturation from calls and tokens because the provider's number comes late, the fair share per tenant for live, and the batch queue into the room; lending the room to live calls over their share is the design on the same number. Nothing of it is in v2, where the model is a stub.
 - Tools and state: timeouts and limits on the downstreams, telemetry off the state store.
 
 ## 6 · Performance
 
 Page: [docs/PERFORMANCE.md](docs/PERFORMANCE.md)
 
-- Time and tokens, paid on every call: the prefix cache and the order of the prompt; tools in hundreds, with one search tool in the prompt and the catalog and the index behind it; dedupe of tool results; multi-agent leakage, in the DAG too.
+- Time and tokens, paid on every call. Built in v2: dedupe of tool results, and agent as a tool against multi-agent leakage. Design, from my platform: the prefix cache and the order of the prompt, and tools in hundreds with one search tool in the prompt and the catalog and the index behind it. The leak in the DAG is on the same page.
 
 ## 7 · Sub-agents
 

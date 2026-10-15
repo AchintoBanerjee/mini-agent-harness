@@ -1,18 +1,14 @@
 # Mini agent harness, v2
 
 The harness from the live round (`../v1`, frozen) extended in place, with HTTP as its face.
-A question is a turn (its id is the job id) in a conversation; `POST /runs` writes the turn
-row and its queue message and answers with the id at once; a `worker` process runs the loop,
-writing every span to `harness.db` (SQLite) before acting on it and pushing every step and
-every piece of the answer to the server, which holds the run's stream; `GET /turns/{id}/events`
-forwards that stream from the last id the client saw. A worker that dies loses its lease and
-the next worker resumes the turn from its last saved span. A runaway tool is cut off at the agent's timeout,
-independent tool calls run together, a repeated call inside a conversation is deduped, an
-agent can be a tool (its loop runs inside the tool call, its rows nested in the same turn),
-and a golden set scores the harness itself. The model is a stub (`RuleBasedLLM`): no network,
-no keys. The high-level design is `../docs/V2_HLD.md`; the queue, the lease and the dead
-worker are `../docs/DURABILITY.md`; an agent as a tool is `../docs/SUBAGENTS.md`; the design
-write-up is `../DESIGN.md`.
+
+- A question is a turn in a conversation; the turn's id is the job id.
+- `POST /runs` writes the turn row and its queue message and answers with the id at once.
+- A `worker` process runs the loop. It writes every span to `harness.db` (SQLite) before acting on it, and pushes every step and every piece of the answer to the server, which holds the run's stream; `GET /turns/{id}/events` forwards that stream from the last id the client saw.
+- A worker that dies loses its lease, and the next worker resumes the turn from its last saved span.
+- A runaway tool is cut off at the agent's timeout; independent tool calls run together; a repeated call inside a conversation is deduped; an agent can be a tool, its loop run inside the tool call with its rows nested in the same turn; a golden set scores the harness itself.
+- The model is a stub (`RuleBasedLLM`): no network, no keys.
+- The pages: `../docs/V2_HLD.md` (the design), `../docs/DURABILITY.md` (the queue, the lease, the dead worker), `../docs/SUBAGENTS.md` (an agent as a tool), `../DESIGN.md` (the write-up that ties them together).
 
 ## Build and test
 
@@ -541,8 +537,10 @@ $ java --enable-native-access=ALL-UNNAMED -cp "target/classes:target/lib/*" harn
 
 An agent is a file in `agents/`: its name, the tools it may call, its pass cap, its per-call
 timeout and, if it says so, `maxModelCalls` (default 20), the model calls one turn may spend,
-children included. A tool it does not list is `DENIED` before it runs (`refund_order` is
-registered and listed by no agent for exactly that case). A builder that writes such files
+children included. A tool the model names outside the list is `DENIED` before it runs. The stub only ever
+names an agent's own tools, so the demo cannot show that row; the proof is
+`aModelThatNamesAToolOutsideTheAgentsListIsDeniedAndTheLoopMovesOn` in `OrchestratorTest`.
+`refund_order` is registered and listed by no agent for exactly that case. A builder that writes such files
 would be its own service in front of this metadata; there is no endpoint for it here.
 
 ```json

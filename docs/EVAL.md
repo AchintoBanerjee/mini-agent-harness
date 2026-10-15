@@ -2,7 +2,7 @@
 
 [The issue](#the-issue) · [Your own rows, or a product](#your-own-rows-or-a-product) · [The design](#the-design) · [The choices](#the-choices) · [What I ran](#what-i-ran-on-my-platform-in-production) · [The implementation](#the-implementation) · [Proof](#proof) · [Live, at scale](#live-at-scale-where-the-rows-go-and-who-judges) · [What v2 implements](#what-v2-implements)
 
-An agent can be up, fast, error-free, and completely wrong. Measuring a harness means two questions, asked separately and never blended into one score: did the loop do its job, and was the answer right. Every output below is from a real run of `./demo.sh`; the committed `demo-output.txt` is a later run, so ids and timings differ, nothing else.
+An agent can be up, fast, error-free, and completely wrong. Measuring a harness means two questions, asked separately and never blended into one score: did the loop do its job, and was the answer right. Every output below is pasted from `demo-output.txt`, which `./demo.sh` writes.
 
 ## The issue
 
@@ -49,17 +49,19 @@ v2 does it over its own rows: the golden set, the runner and the table are code 
 | one blended health score | quality, satisfaction, reliability, performance weighted into one number | one number to alert on | it cannot say which rate moved, since when, or who owns it |
 | named rates per agent and version | every check is its own rate, compared to the last version and last week | the finding names the slice and the owner | more alerts, no single dashboard number |
 
-I pick the expected trace, the sampled judge and named rates. The blended score was designed once and thrown away: a number that cannot say what moved is not actionable. The harness scores are code over the rows, and the judge is spent only where words must be read.
+I pick the expected trace, the sampled judge and named rates. I designed a blended score once and threw it away: a number that cannot say what moved is not actionable. The harness scores are code over the rows, and the judge is spent only where words must be read.
 
 ## What I ran, on my platform in production
 
-- Golden sets were recorded from real sessions by the teams that own the agents, with the expected trace stored in the schema next to the expected answer, and replayed as a batch gate before promotion. Not a CI gate: a bad change reached the gate, not the pull request.
+- The teams that own the agents recorded golden sets from real sessions. Each case stored the expected trace next to the expected answer. We replayed them as a batch gate before promotion. Not a CI gate: a bad change reached the gate, not the pull request.
 - A scheduled judge over a sample of production turns, per agent, throttled, scoring groundedness, answer and context relevance, correctness and completeness, published per agent version. A model switch that broke agents in subtle ways showed as a trend break; teams had anecdotes, the judge had numbers; stabilized in days. Model changes needed an evaluation gate after that.
-- The scorer that never shipped: the expected trace was stored on every case, and the route and step scorers were on my own gap list as the first thing to add. The data was there, the scorer was not; tool-call regressions were found by people reading traces.
+- We never shipped the trace scorer. Every case stored the expected trace, and the route and step scorers were the first thing on my gap list. The data was there, the scorer was not. People found tool-call regressions by reading traces.
 - Tool errors sat in the rows uncounted. The cheapest checks, tool error rate by tool and version, right tool against the expected set, are pure code, and they were the ones missing.
-- The judge that ran sampled by step, not by turn, and published the result under a turn label. The grain of every score is decided before it reaches a chart now.
-- A composite health score was designed in an early one-pager and dropped for the reason in the table.
-- The finding that made the measurement real was reached by hand: a per-turn chart from the rows showed about 175k prompt tokens by turn sixteen, most of it ten copies of one tool result. A model problem is flat; a climbing curve is the context builder. The fix cut tokens by about eighty percent with the tenants' golden sets flat. That incident is the eval system done by a person, and it is why the harness scores come first.
+- Our judge sampled by step, not by turn, and published the result under a turn label. Now I decide the grain of every score before it reaches a chart.
+- I designed a composite health score in an early one-pager and dropped it, for the reason in the table.
+- The finding that made the measurement real was one I reached by hand. I plotted prompt tokens per turn from the rows: about 175k by turn sixteen, most of it ten copies of one tool result.
+- A model problem is flat; a climbing curve is the context builder. The fix cut tokens by about eighty percent, with the tenants' golden sets flat.
+- That was me doing the eval system's job by hand, and it is why the harness scores come first.
 
 ## The implementation
 
@@ -107,7 +109,7 @@ public static CaseResult score(GoldenCase golden, List<Span> rows, String answer
 
 ## Proof
 
-<details><summary>proof: the golden set over HTTP, two FAILs left in on purpose</summary>
+<details><summary>proof: the golden set from the `eval` command, two FAILs left in on purpose; `POST /evals` returns the same lines</summary>
 
 ```
  1  PASS  support    What is the status of order ORD-1?                      ran order_status,shipping_status  3 passes     12 ms
@@ -134,7 +136,7 @@ The before-ship loop reads a few rows. The live loop reads every step of every a
 
 - **One store cannot be both.** The step row is on the request path: the next turn's context is built from it, resume reads it, the UI renders it, audit and replay need the full text. Point reads by id, per tenant, transactional. The fleet question is the opposite shape: scan billions of skinny rows across every tenant, group by anything, append-only. One logical model, two physical shapes, joined by the same ids.
 - **The span rows.** One wide, append-only table, one row per step, every dimension repeated on every row: tenant, agent, version, model, pod, tokens, cost, latency, status, and the text as a pointer by default. Any fleet question is one GROUP BY, then one click into the exact turn. Scores sit beside the rows, keyed by the turn id and the judge version. A column store such as ClickHouse, or LangSmith on top of one.
-- **Three screens, three jobs.** Prometheus pages me; the span rows tell me who and where; the tenant row shows me why. Alerts need pre-aggregated series with few labels. The rows take any cardinality and decide the question at query time. ClickHouse computes, Prometheus pages.
+- **Three screens, three jobs**, the design. The metrics system pages me. The span rows tell me who and where. The tenant row shows me why. Alerts need a few numbers summed ahead of time, with few labels; the span rows keep every dimension and answer any question at query time. The column store computes, the metrics system pages.
 - **The writer.** The loop writes each step once. A collector takes the span out of the process, strips identifiers, and fans the same span out to the trace store and to the metrics page. Nothing in the orchestrator knows which vendor is behind it; switching one product for another is a change in the collector's export list, not in the loop.
 - **Telemetry travels, content stays.** Ids, dimensions and numbers go everywhere. The words stay in the tenant's store and are fetched by id, with authorization, when a human or the judge needs them. A redacted copy goes to the trace store only when the tenant opts in, in its region, with a retention limit. Never to a vendor's cloud for an enterprise tenant unless the contract says so.
 - **The judge runs inside that boundary.** It reads the tenant row by id, or the redacted copy, and writes back only a score.

@@ -2,7 +2,7 @@
 
 [What v2 is](#what-v2-is) · [One question, several tool calls](#one-question-several-tool-calls) · [The data model](#the-data-model) · [The HTTP endpoints](#the-http-endpoints) · [Streaming the answer](#streaming-the-answer) · [Persistence](#persistence) · [Agents and tools are metadata](#agents-and-tools-are-metadata) · [Try it](#try-it) · next: [v2: additional features](V2_FEATURES.md)
 
-The harness as a small service: you call it over HTTP, its state lives in one SQLite file, and the answer streams back as the steps happen. The model is still a stub; nothing needs a key or a network. Every output below is from a real run of `./demo.sh`; the committed `demo-output.txt` is a later run, so its ids and timings differ, nothing else.
+The harness as a small service: you call it over HTTP, its state lives in one SQLite file, and the answer streams back as the steps happen. The model is still a stub; nothing needs a key or a network. Every output below is pasted from `demo-output.txt`, which `./demo.sh` writes; the two SQLite queries at the end were run by hand after another run, so their ids differ.
 
 ## What v2 is
 
@@ -96,18 +96,7 @@ CREATE TABLE IF NOT EXISTS span (
 
 The server is the JDK's own HTTP server, one virtual thread per request, JSON by hand. No framework. In the code the loop is already in its own process, `worker`, over the same file; why is the durability page.
 
-<details><summary>the handler for POST /runs</summary>
-
-```java
-String agentName = text(body, "agent");
-agent = findAgent(agentName).orElseThrow(() -> new HttpError(400, "no agent named " + agentName));
-conversationId = store.newConversation(agent.name());
-String turnId = queue.submit(conversationId, question);
-return send(exchange, 202, JSON.createObjectNode().put("turnId", turnId).put("jobId", turnId)
-        .put("conversationId", conversationId).put("status", TurnRow.Status.QUEUED.name()));
-```
-The turn row and its queue message go in first, in one transaction, the `202` goes out, and a worker runs the loop.
-</details>
+`POST /runs` writes the turn row and its queue message in one transaction (`RunQueue.submit`), answers `202` with the id, and a worker runs the loop; the handler is `HttpApi.submit`.
 
 <details><summary>proof: POST a question, then GET the turn</summary>
 
@@ -223,30 +212,7 @@ The `202` came back before any worker had looked. One second later the turn is `
 
 I pick SSE: the answer flows one way, and the protocol already has the reconnect-with-last-id a step log needs. How that open connection scales across nodes is its own section.
 
-<details><summary>the producer and the consumer</summary>
-
-```java
-// the loop, the producer: the model's final reply streams to the loop, the loop forwards each piece
-Consumer<String> out = depth == 0 ? piece -> listener.token(turn.id(), piece) : piece -> { };
-String answer = llm.answer(turn, out);
-
-// the worker's listener: every event goes to the API's stream; the lease moves with each row
-public void on(Span span) { queue.extend(turnId, visibilityMs); producer.on(span); print.on(span); }
-public void token(String turnId, String text) { producer.token(turnId, text); }
-public void done(String turnId, TurnRow.Status status, String answer) { producer.done(turnId, status, answer); }
-
-// the API, the consumer: read the run's stream from the client's last id, blocking until the next entry
-RunStreams.Stream stream = streams.open(id);
-while (!stopped) {
-    for (RunStreams.Entry entry : stream.read(after, READ_WAIT_MS)) {
-        if (entry.event().equals("done")) { write(out, "event: done\ndata: " + entry.data() + "\n\n"); return 200; }
-        write(out, "id: " + entry.id() + "\nevent: " + entry.event() + "\ndata: " + entry.data() + "\n\n");
-        after = entry.id();
-    }
-}
-```
-`RunStreams` is the stand-in for the Redis Stream: entries with ids per turn, a blocking read, `done` ends it, a 60 s time to live, no sweeper. `HttpPush` is the worker's side of `POST /turns/{id}/events`. The one place that reads the store for a client is `replay`, and its comment calls it the fallback.
-</details>
+Three rules carry the stream, and they are easier to say than to read out of the code. The loop forwards each piece of the model's final reply to its listener, and only the parent loop does: a child's answer is a tool result for its parent, not text the user sees (`Orchestrator.finish`). The worker's listener does three things per row, in this order: extend the lease, push the row to the API's stream, print it; print may be the simulated crash, so the row reaches the stream before the worker dies (`Worker.Forwarding`). The API reads the run's stream from the client's last id with a blocking read and writes each entry as an event; `done` ends the response (`HttpApi.events`). `RunStreams` is the stand-in for the Redis Stream: entries with ids per turn, a blocking read, `done` ends it, a 60 s time to live, no sweeper. `HttpPush` is the worker's side of `POST /turns/{id}/events`. On `GET /turns/{id}/events` the one place that sends rows from the store is `replay`, and its comment calls it the fallback; `GET /turns/{id}` reads the store by design, that is the polling row above.
 
 <details><summary>proof: the stream, then a reconnect with Last-Event-ID</summary>
 
@@ -372,7 +338,7 @@ data: {"turnId":"r-fda1","text":"2026-10-16"}
 event: done
 data: {"turnId":"r-fda1","status":"DONE","answer":"Order ORD-1: SHIPPED, shipment SHP-1\nShipment SHP-1: IN TRANSIT, arriving 2026-10-16"}
 ```
-Five steps, ten tokens, then `done`; the reconnect starts at 3. In the `--slow` section of the demo the stream was opened before the worker started: the client saw the two lookups overlap and the tokens arrive 40 ms apart (`demo-output.txt`).
+Five steps, ten tokens, then `done`; the reconnect starts at 3. In the `--slow` section of the demo the stream was opened before the worker started and received every step and every token as they happened; the saved text has no timestamps, so the overlap shows in the NOTE row, wall 305 ms against work 604 ms (`demo-output.txt`).
 </details>
 
 ## Persistence

@@ -1,6 +1,6 @@
 # Sub-agents: an agent as a tool
 
-[The issue](#the-issue) · [The choices](#the-choices) · [Agent as a tool](#agent-as-a-tool) · [The implementation](#the-implementation) · [Proof](#proof) · [The DAG](#the-dag)
+[The issue](#the-issue) · [The choices](#the-choices) · [What I ran](#what-i-ran-on-my-platform-in-production) · [Agent as a tool](#agent-as-a-tool) · [The implementation](#the-implementation) · [Proof](#proof) · [The DAG](#the-dag)
 
 A run can hand a question to another agent and get the answer back as a tool result: the child is the same loop class, run inside the tool call, its rows in the same turn (job id). There are more multi-agent patterns in the frameworks than the three on this page; these are the ones I have run in production at scale, and they cover most of what teams need. Every output below is pasted from `demo-output.txt`, which `./demo.sh` writes.
 
@@ -12,7 +12,7 @@ A run can hand a question to another agent and get the answer back as a tool res
 
 ## The choices
 
-Three ways to let agents work together. The first is the one we did, and it was the wrong default; the other two are the ones that work, and they answer different questions.
+Three ways to let agents work together. The first is the one we picked on my platform, and it was the wrong default. The other two work, and they answer different questions.
 
 ![three ways to let agents work together](subagents-patterns.svg)
 
@@ -33,7 +33,12 @@ Things to watch for:
 - an agent that delegates to itself (the depth cap);
 - a tree that burns passes (the shared budget).
 
-We picked a framework's group chat as our first multi-agent default, and I had not researched the pattern enough. One release in, with teams building on it, the numbers came back: up to twice the model calls, and every agent reading the whole conversation. I went to leadership and stopped new teams on it. The paths we knew moved onto our DAG, the rest onto agent as a tool. Median latency on the migrated paths dropped by about a third. The cost was one missed release for the teams on it, caught before production.
+## What I ran, on my platform in production
+
+- We picked a framework's group chat as our first multi-agent default. I had not researched the pattern enough.
+- One release in, with teams building on it, the numbers came back: up to twice the model calls, and every agent reading the whole conversation.
+- I went to leadership and stopped new teams on it. The paths we knew moved onto our DAG, the rest onto agent as a tool.
+- Median latency on the migrated paths dropped by about a third. The cost was one missed release for the teams on it, caught before production.
 
 ## Agent as a tool
 
@@ -103,7 +108,12 @@ String asChild(String conversationId, String turnId, String goal) {
 The child is built from the parent's pieces, with its own agent, tool caller and depth; a throw inside it is a tool error to the parent, which is how the depth limit surfaces as a row.
 </details>
 
-What changed: a tool type, `agent`, in the loader; a row kind, `AGENT`; a `TurnBudget` per turn for span numbers and model calls, passed with depth and parent span into the loop's constructor, which binds its agent tools to itself; `record` numbers from the budget and stamps the two keys on a child's rows, `loop` asks the budget before each model call; the caller runs the bound copy; indentation in the printers.
+What changed:
+
+- a tool type, `agent`, in the loader, and a row kind, `AGENT`;
+- a `TurnBudget` per turn for span numbers and model calls, passed with depth and parent span into the loop's constructor, which binds its agent tools to itself;
+- `record` numbers rows from the budget and stamps the two keys on a child's rows; `loop` asks the budget before each model call;
+- the caller runs the bound copy; indentation in the printers.
 
 What did not change: the loop's steps (ask, write, run, write, repeat), the resume path, the store, the schema, the queue, the endpoints, the stream.
 
@@ -273,4 +283,4 @@ done r-1e43 · 9 spans · 173 ms · DONE in harness.db · acked · handler calls
 
 The other pattern, for when the sequence is known. Most of the time you do know your workflow, and workflows can be long, so scaling them is the concern. The DAG holds the flow and the model never decides it: the routing is the edges, zero tokens, replayable, testable. Where a model node does route, at the top, it routes on its inputs only: the nodes share one conversation, so each node's tool calls and child context stay inside the node and only its output goes on, or the leak from pattern 1 is back.
 
-For this proof of concept I built agent as a tool, because the example's sequence is not known up front and it fits the loop we already have. The DAG is just as implementable, and it is better implemented on a workflow engine such as Temporal than hand-rolled: durable, replayable, a long workflow survives its worker. Which of the two a platform leans on is a choice to validate and weigh against its own workloads, not a ranking; my platform ended up with both.
+For this proof of concept I built agent as a tool, because the example's sequence is not known up front and it fits the loop we already have. The DAG is just as implementable. My platform ended up with both, the DAG on our own engine. If I built it again I would put the DAG on a workflow engine such as Temporal, for the durability and the replay: a long workflow survives its worker. I have not run one, so that is a direction, not a result. Which one a platform leans on depends on its workloads.

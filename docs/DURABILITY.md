@@ -2,13 +2,16 @@
 
 [The issue](#the-issue) · [The design](#the-design) · [The guarantee](#the-guarantee) · [The choices](#the-choices) · [What I ran](#what-i-ran) · [The implementation](#the-implementation) · [Proof](#proof)
 
-A turn (job id) becomes a message on a queue, a worker runs it, and when the worker dies the next one picks the turn up from its last saved step. This is how I envision it with SQS; the POC shows the bare minimum of the idea with a SQLite table standing in for the queue, the same three calls. Everything beyond that is out of scope here and says so. Every output below is from a real run of `./demo.sh`; the committed `demo-output.txt` is a later run, so its ids and timings differ, nothing else.
+- A turn (its id is the job id) is a message on a queue. A worker runs it. If the worker dies, the next worker loads the saved steps and continues from the last one.
+- This is the shape I ran on my platform, in production, with an SQS-style queue. The POC shows the bare minimum: a SQLite table standing in for the queue, with the same three calls.
+- Everything beyond that is out of scope here and says so.
+- Every output below is pasted from `demo-output.txt`, which `./demo.sh` writes.
 
 ## The issue
 
 - The agent is called; a turn is seconds of model and tool calls; the server dies in the middle of one.
 - In v1 the loop lived in the request, so it died with the server, and the client's answer with it.
-- The question is how the next server picks the turn up from where it stopped, without running the saved steps twice.
+- The question is how the next worker continues the turn from its last saved step, without running the saved steps twice, and what happens to the one call that was in flight.
 
 ## The design
 
@@ -22,7 +25,7 @@ A turn (job id) becomes a message on a queue, a worker runs it, and when the wor
 - **Dead worker**: no ack, the lease runs out, the message is visible again; the next worker receives it, finds the saved steps, and resumes from the last one, so the model is asked only for what comes next.
 - **DLQ** (dead-letter queue): after N receives the message goes to a dead-letter queue instead of looping forever. Out of scope for the POC.
 - **The stream back to the client**: the worker pushes each step and each piece of the answer to the run's stream as they happen; the API node holding the connection forwards it as Server-Sent Events (SSE), so it does not care which worker is on the turn. The store is read only if the stream is gone: the saved rows, once.
-- **The call in flight**: a worker that dies after a tool did its work and before the row landed leaves one call that runs twice; every call carries a key (job id + deciding step), and a tool that writes ignores the repeat.
+- **The call in flight**: a worker that dies after a tool did its work and before the row landed leaves one call that runs twice; every call carries a key, and a tool that writes ignores the repeat. In v2 the key is the job id plus the deciding step, so two calls of one batch share it; a production key adds the call's position in the batch.
 
 | table | columns | what it is for |
 | --- | --- | --- |
@@ -42,8 +45,8 @@ What the queue promises, and what it cannot, on one turn.
 | What | Guarantee | What makes it true |
 |---|---|---|
 | a step that is saved | runs once | resume starts after it |
-| the model's decision | recorded, never asked twice | it is saved before the tool runs |
-| the one call in flight when the worker dies | may run twice | the harness cannot know whether the tool did its work, so it runs it again: at least once |
+| the model's decision | recorded, never asked twice | it is saved before the tool runs; `crashAfterTheLlmRowIsPersistedResumesWithoutAskingTheModelAgain` in `ResumeTest` |
+| the one call in flight when the worker dies | may run twice | the harness cannot know whether the tool did its work, so it runs it again: at least once. Not in the demo; `crashBeforeTheToolRowIsPersistedRunsThePendingCallAgain` in `ResumeTest` is the proof |
 | a tool that writes | no double effect | it is idempotent on the key the harness gives it, job id plus step |
 | the whole turn | finishes, or is handed to the next worker | ack only after the last step is saved; no ack, the lease runs out |
 
@@ -58,23 +61,23 @@ What the queue promises, and what it cannot, on one turn.
 | --- | --- | --- | --- |
 | a job table polled by workers | workers `SELECT` the oldest `QUEUED` row and `UPDATE` it to `RUNNING` with their name; a stuck row is found by its age | nothing new: the table you already have | the claim race, the "is it stuck" clock and the sweeper for orphans are all yours to write and get right |
 | a queue with a visibility timeout | the three calls of SQS (Amazon's Simple Queue Service): `receive` hides the message for a window, `extend` pushes the window, `ack` deletes; no ack and the window runs out on its own | the orphan problem is solved by the protocol: a dead worker's message comes back by itself, counted, and a limit sends it to the DLQ | the message and the job row are two things to keep in step; the one call in flight at a crash can run twice |
-| Temporal | a workflow engine replays the turn's history to rebuild its state; activities retry by policy, timers and signals are built in | exactly-once workflow steps, retries, timers, long waits, versioning, a UI | a cluster to run, a programming model to learn, the loop rewritten as a workflow |
+| Temporal | a workflow engine replays the turn's history to rebuild its state; activities retry by policy, timers and signals are built in | a completed step is in its history and never re-runs; retries, timers, long waits, versioning, a UI | a cluster to run, a programming model to learn, the loop rewritten as a workflow |
 
-I pick the queue: the simplest thing that works at the scale I ran, and the lease and the redelivery come from the protocol instead of from code I have to get right. Temporal is the step up: its own infrastructure and a programming model, in return for replay, timers and long waits. If the scale or the workflow shapes outgrow the queue, that is where I go.
+The queue is what I ran: the simplest thing that worked at that scale, and the lease and the redelivery come from the protocol instead of from code I have to get right. Temporal is the step up: its own infrastructure and a programming model, in return for replay, timers and long waits. We never evaluated it; if I built this again, that is where I would start.
 
 ## What I ran
 
 - The first version checkpointed the run only at wait points: an approval, a timer, a long call. Between them the run lived in memory, and a crash between them lost it.
 - The next version put an SQS-style queue with a visibility timeout in front of the loop: the worker extends it while the run is live, acks only after the step is persisted, a dead worker's message becomes visible again and another pod picks it up, repeated failures go to the DLQ. The scaling lever became queue depth, not request count.
 - Resume is an opt-in log of completed tool calls per conversation: the new pod rebuilds the context from it and the model continues.
-- The contract, said as a contract: completed tool calls run once, the one in-flight call at least once, so tool writes are idempotent by key; the fix if that is ever not enough is a started-marker before the call and a check on resume.
+- The contract: completed tool calls run once, the one in-flight call at least once, so tool writes are idempotent by key. If that is ever not enough, the fix is a started-marker before the call and a check on resume.
 - We never evaluated Temporal; with hindsight durability was the real hard problem, and I would put a durable-execution engine under the loop.
 
 ## The implementation
 
-What runs here, said plainly:
+What runs here:
 
-- One jar, two commands. `serve` is the API process; `worker` is the orchestrator process. Two JVM processes on one laptop, one SQLite file between them.
+- One build, two commands. `serve` is the API process; `worker` is the orchestrator process. Two JVM processes on one laptop, one SQLite file between them.
 - Not containers, not pods. A process exiting stands in for a pod dying, a second process for the next pod, the `queue` table for SQS, the file for the tenant database. The one network call between the two is the worker pushing the run's stream to the API over HTTP; the API holds that stream in memory, standing in for the Redis Stream.
 - One worker at a time on the file. More than one worker process at once is out of scope here: SQLite has one writer, and the three calls would move to SQS before a second worker is needed.
 - The queue is one table in the same file as the runs, and `RunQueue` is the three calls on it; swap the table for SQS and the three calls are the same.
@@ -98,27 +101,7 @@ public void ack(String turnId) {                                          // the
 One `UPDATE` both finds the oldest visible message and hides it, so two workers asking at the same moment cannot both get it; `extend` and `ack` are one statement each. The database plumbing around each statement is left out here; `RunQueue.java` has it.
 </details>
 
-The worker is the loop around those calls: receive, claim, run or resume, ack last.
-
-<details><summary>the worker loop</summary>
-
-```java
-Optional<RunQueue.Message> next = queue.receive(visibilityMs);
-if (next.isEmpty()) { return false; }                                     // loop() waits 500 ms and asks again
-String turnId = next.get().turnId();
-int attempt = store.claim(turnId, name);                                   // RUNNING, claimed_by, attempts + 1
-TurnRow turn = store.turn(turnId);
-List<Span> saved = store.load(turnId);
-// inside orchestrator(turn): a listener that runs after every written row:
-//   span -> { queue.extend(turn.id(), visibilityMs); print.on(span); }
-String answer = saved.isEmpty()
-        ? orchestrator(turn).start(turnId)                                 // a fresh turn
-        : orchestrator(turn).resume(turnId);                               // a dead worker's turn, from its last row
-queue.ack(turnId);                                                         // the last thing
-```
-
-The store says whether a worker died on this job (it has steps), so resuming is the normal path, not a special one. The listener runs after each row is in the store, so the lease moves with the saved work; the ack comes last.
-</details>
+The worker is the loop around those calls, `Worker.once`: receive, claim the row (`RUNNING`, its pid, attempts + 1), load the saved rows, `start` when there are none and `resume` when there are, ack last. The store says whether a worker died on this turn, so resuming is the normal path, not a special one. The listener runs after each row is in the store, so the lease moves with the saved work; the ack comes last.
 
 ## Proof
 
