@@ -4,11 +4,13 @@ import java.util.ArrayList;
 import java.util.List;
 
 /**
- * Answer is what the last pass's tools gave back, unchanged; several tools in one pass are
- * joined with newlines in the order they were asked for. An agent run as a tool counts the
- * same: its answer is the AGENT row's output. A DEDUPED row repeats an earlier step, so its
- * answer is that step's output. A tool that did not end OK is named with its status so the
- * failure reaches the user. No tool ran means no tool fit.
+ * The answer relays the whole turn: every call row of this loop, in the order it ran, each
+ * once, joined with newlines. A row that ended OK gives its output unchanged. An agent run
+ * as a tool counts the same: its AGENT row's output, which is the child's answer. The
+ * turn's first row is the loop's own, so the rows at its depth are this loop's; a child's
+ * rows sit deeper and are not relayed again. A DEDUPED row repeats an earlier step, so its
+ * line is that step's output. A tool that did not end OK is named with its status so the
+ * failure reaches the user. No call row means no tool fit.
  */
 public class RelaySummarizer {
 
@@ -16,14 +18,10 @@ public class RelaySummarizer {
 
     public String summarize(Turn turn) {
         List<String> outputs = new ArrayList<>();
-        int pass = -1;
+        String depth = turn.spans().isEmpty() ? "0" : depthOf(turn.spans().getFirst());
         for (Span span : turn.spans()) {
-            if (!span.kind().isCall()) {
+            if (!span.kind().isCall() || !depthOf(span).equals(depth)) {
                 continue;
-            }
-            if (span.pass() != pass) {
-                outputs.clear();
-                pass = span.pass();
             }
             if (span.status() == Span.Status.OK) {
                 outputs.add(span.response());
@@ -34,6 +32,11 @@ public class RelaySummarizer {
             }
         }
         return outputs.isEmpty() ? NO_TOOL : String.join("\n", outputs);
+    }
+
+    /** How deep the loop that wrote the row runs: 0 for the turn's own, deeper for a child's. */
+    private static String depthOf(Span span) {
+        return span.attrs().getOrDefault("depth", "0");
     }
 
     /** Follows a DEDUPED row's ref to the step it repeats, anywhere in the conversation: that step's output. */

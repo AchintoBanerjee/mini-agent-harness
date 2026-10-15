@@ -40,6 +40,7 @@ import org.junit.jupiter.api.io.TempDir;
 class WorkerTest {
 
     private static final String QUESTION = "What is the status of order ORD-1?";
+    private static final String ANSWER = "Order ORD-1: SHIPPED, shipment SHP-1\nShipment SHP-1: IN TRANSIT, arriving 2026-10-16";
     private static final Path AGENTS = Path.of("agents");
     private static final Path TOOLS = Path.of("tools");
 
@@ -85,17 +86,20 @@ class WorkerTest {
 
         TurnRow done = store.turn(id);
         assertEquals(TurnRow.Status.DONE, done.status());
-        assertEquals("Order ORD-1: SHIPPED, shipment SHP-1", done.answer());
+        assertEquals(ANSWER, done.answer());
         assertEquals("worker-b", done.claimedBy());
         assertEquals(2, done.attempts());
         List<Span> rows = store.load(id);
-        assertEquals(List.of(Span.Kind.LLM, Span.Kind.TOOL, Span.Kind.NOTE, Span.Kind.LLM), kinds(rows));
+        assertEquals(List.of(Span.Kind.LLM, Span.Kind.TOOL, Span.Kind.NOTE, Span.Kind.LLM, Span.Kind.TOOL, Span.Kind.LLM), kinds(rows));
         assertEquals("resumed from step 2", rows.get(2).request());
-        assertEquals("Done[]", rows.get(3).response());
+        assertEquals("ToolCall[toolName=shipping_status, input={shipmentId=SHP-1}]", rows.get(3).response(),
+                "the second worker continues the chain at pass 2, from the saved result");
+        assertEquals("Done[]", rows.get(5).response());
         assertEquals(0, queue.size(), "acked");
         assertEquals(1, ToolLoader.HANDLER_CALLS.get("order_status"), "the saved tool call did not run again");
+        assertEquals(1, ToolLoader.HANDLER_CALLS.get("shipping_status"));
         assertEquals(1, llm.decisionAsks, "the model decided the tool call once, in the first worker");
-        assertEquals(2, llm.asks, "and was asked only for the new step by the second");
+        assertEquals(3, llm.asks, "and was asked only for the new steps by the second: chain, then Done");
     }
 
     @Test
@@ -107,7 +111,7 @@ class WorkerTest {
         String id = queue.submit(store.newConversation("support"), QUESTION);
         assertTrue(worker.once());
         assertEquals(TurnRow.Status.DONE, store.turn(id).status());
-        assertEquals(3, store.load(id).size());
+        assertEquals(5, store.load(id).size());
         assertEquals(0, queue.size());
     }
 
@@ -136,10 +140,11 @@ class WorkerTest {
 
         assertTrue(worker.once());
 
-        assertEquals(List.of("step 1 LLM", "step 2 TOOL", "step 3 LLM",
+        assertEquals(List.of("step 1 LLM", "step 2 TOOL", "step 3 LLM", "step 4 TOOL", "step 5 LLM",
                         "token " + id + " Order ", "token " + id + " ORD-1: ", "token " + id + " SHIPPED, ",
-                        "token " + id + " shipment ", "token " + id + " SHP-1",
-                        "done " + id + " DONE Order ORD-1: SHIPPED, shipment SHP-1"),
+                        "token " + id + " shipment ", "token " + id + " SHP-1\nShipment ", "token " + id + " SHP-1: ",
+                        "token " + id + " IN ", "token " + id + " TRANSIT, ", "token " + id + " arriving ", "token " + id + " 2026-10-16",
+                        "done " + id + " DONE " + ANSWER),
                 pushed, "the rows as they land, the answer as the model produces it, then the end");
         assertEquals(TurnRow.Status.DONE, store.turn(id).status());
     }
@@ -164,11 +169,11 @@ class WorkerTest {
         }
 
         assertEquals(TurnRow.Status.DONE, store.turn(id).status());
-        assertEquals("Order ORD-1: SHIPPED, shipment SHP-1", store.turn(id).answer());
+        assertEquals(ANSWER, store.turn(id).answer());
         assertEquals(0, queue.size(), "acked");
         String printed = console.toString();
         String warning = "stream: cannot reach http://localhost:" + closedPort + ", clients will read the saved rows";
-        assertEquals(1, printed.split(java.util.regex.Pattern.quote(warning), -1).length - 1, "said once, for nine events:\n" + printed);
+        assertEquals(1, printed.split(java.util.regex.Pattern.quote(warning), -1).length - 1, "said once, for sixteen events:\n" + printed);
     }
 
     @Test
@@ -195,7 +200,7 @@ class WorkerTest {
         assertEquals(0, queue.size(), "acked");
         String printed = console.toString();
         String warning = "stream: cannot reach http://localhost:" + api.port() + ", clients will read the saved rows";
-        assertEquals(1, printed.split(java.util.regex.Pattern.quote(warning), -1).length - 1, "said once, for nine rejected pushes:\n" + printed);
+        assertEquals(1, printed.split(java.util.regex.Pattern.quote(warning), -1).length - 1, "said once, for sixteen rejected pushes:\n" + printed);
     }
 
     private static List<Span.Kind> kinds(List<Span> rows) {

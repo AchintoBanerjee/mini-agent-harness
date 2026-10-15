@@ -36,8 +36,9 @@ class OrchestratorTest {
     }
 
     @Test
-    void orderQuestionIsAnsweredByTheOrderTool() {
-        assertEquals("Order ORD-1: SHIPPED, shipment SHP-1", orchestrator().run("What is the status of order ORD-1?"));
+    void orderQuestionIsAnsweredByTheOrderToolThenTheShippingToolItsResultNames() {
+        assertEquals("Order ORD-1: SHIPPED, shipment SHP-1\nShipment SHP-1: IN TRANSIT, arriving 2026-10-16",
+                orchestrator().run("What is the status of order ORD-1?"));
     }
 
     @Test
@@ -87,12 +88,14 @@ class OrchestratorTest {
         String answer = orchestrator.run("What is the status of order ORD-1?");
 
         String turnId = orchestrator.conversation().turns().getFirst().id();
-        assertEquals(List.of("Order ", "ORD-1: ", "SHIPPED, ", "shipment ", "SHP-1"), listener.tokens, "one word per piece, the space kept");
+        assertEquals(List.of("Order ", "ORD-1: ", "SHIPPED, ", "shipment ", "SHP-1\nShipment ", "SHP-1: ", "IN ", "TRANSIT, ", "arriving ", "2026-10-16"),
+                listener.tokens, "one word per piece, the space kept; the newline between the two lines rides inside a piece");
         assertEquals(answer, String.join("", listener.tokens), "the pieces concatenate to the answer");
         assertEquals(List.of(turnId), listener.tokenTurns.stream().distinct().toList(), "every piece names the turn");
         assertEquals(List.of(turnId + " DONE " + answer), listener.ends, "done once, after the row says DONE");
-        assertEquals(List.of("step", "step", "step", "token", "token", "token", "token", "token", "done"), listener.order,
-                "the rows first, then the pieces, then done");
+        assertEquals(List.of("step", "step", "step", "step", "step",
+                "token", "token", "token", "token", "token", "token", "token", "token", "token", "token", "done"), listener.order,
+                "the five rows first, then the pieces, then done");
     }
 
     @Test
@@ -164,7 +167,8 @@ class OrchestratorTest {
         Span note = rows.getLast();
         assertEquals(Span.Status.CUT_SHORT, note.status());
         assertEquals("cut short at maxPasses=2", note.request());
-        assertEquals("Order ORD-1: SHIPPED, shipment SHP-1", answer);
+        assertEquals("Order ORD-1: SHIPPED, shipment SHP-1\nOrder ORD-1: SHIPPED, shipment SHP-1", answer,
+                "every call row relays: the second is DEDUPED and gives the step it repeats");
     }
 
     @Test

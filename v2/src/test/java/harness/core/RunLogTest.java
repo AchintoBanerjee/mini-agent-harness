@@ -40,11 +40,12 @@ class RunLogTest {
         List<Span> rows = new ArrayList<>(store.load(turns.get(0).id()));
         rows.addAll(store.load(turns.get(1).id()));
         assertTrue(turns.get(0).id().matches("r-[0-9a-f]{4}"), turns.get(0).id());
-        assertEquals(List.of(1, 2, 3, 4, 5, 6), rows.stream().map(Span::span).toList(), "the span numbers run on through the conversation");
-        assertEquals(List.of(Span.Kind.LLM, Span.Kind.TOOL, Span.Kind.LLM, Span.Kind.LLM, Span.Kind.TOOL, Span.Kind.LLM),
-                rows.stream().map(Span::kind).toList());
-        assertTrue(rows.subList(0, 3).stream().allMatch(row -> row.turnId().equals(turns.get(0).id())));
-        assertTrue(rows.subList(3, 6).stream().allMatch(row -> row.turnId().equals(turns.get(1).id())));
+        assertEquals(List.of(1, 2, 3, 4, 5, 6, 7, 8), rows.stream().map(Span::span).toList(), "the span numbers run on through the conversation");
+        assertEquals(List.of(Span.Kind.LLM, Span.Kind.TOOL, Span.Kind.LLM, Span.Kind.TOOL, Span.Kind.LLM,
+                Span.Kind.LLM, Span.Kind.TOOL, Span.Kind.LLM),
+                rows.stream().map(Span::kind).toList(), "the first turn chains into the shipment, the second does not");
+        assertTrue(rows.subList(0, 5).stream().allMatch(row -> row.turnId().equals(turns.get(0).id())));
+        assertTrue(rows.subList(5, 8).stream().allMatch(row -> row.turnId().equals(turns.get(1).id())));
         assertEquals(rows, announced, "the listener saw the same rows in the same order");
     }
 
@@ -69,7 +70,8 @@ class RunLogTest {
         Orchestrator orchestrator = new Orchestrator(agent, registry, checkingToo,
                 checking, store, announced::add);
 
-        assertEquals("Order ORD-1: SHIPPED, shipment SHP-1", orchestrator.run("What is the status of order ORD-1?"));
-        assertEquals(3, announced.size());
+        assertEquals("Order ORD-1: SHIPPED, shipment SHP-1\nShipment SHP-1: IN TRANSIT, arriving 2026-10-16",
+                orchestrator.run("What is the status of order ORD-1?"));
+        assertEquals(5, announced.size());
     }
 }

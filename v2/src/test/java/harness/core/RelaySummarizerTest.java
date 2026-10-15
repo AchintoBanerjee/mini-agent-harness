@@ -5,18 +5,36 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import java.util.Map;
 import org.junit.jupiter.api.Test;
 
+/** The answer relays every call row of the loop, in run order: a result, a repeat's original, or a named failure. */
 class RelaySummarizerTest {
+
+    private static final String ORDER = "Order ORD-1: SHIPPED, shipment SHP-1";
+    private static final String SHIPMENT = "Shipment SHP-1: IN TRANSIT, arriving 2026-10-16";
 
     private final RelaySummarizer summarizer = new RelaySummarizer();
 
     @Test
-    void theLastToolOutputIsTheAnswer() {
+    void theToolOutputIsTheAnswer() {
         Turn turn = new Turn("order ORD-1");
         turn.spans().add(new Span(Span.Kind.LLM, "pass 1", "ToolCall"));
         turn.spans().add(new Span(Span.Kind.TOOL, "order_status {orderId=ORD-1}", "Order ORD-1: SHIPPED"));
         turn.spans().add(new Span(Span.Kind.LLM, "pass 2", "Done[]"));
 
         assertEquals("Order ORD-1: SHIPPED", summarizer.summarize(turn));
+    }
+
+    @Test
+    void twoPassesEachWithOneOkCallGiveBothLinesInRunOrder() {
+        Turn turn = new Turn("order ORD-1");
+        turn.spans().add(new Span("r-1", 1, 1, Span.Kind.LLM, "pass 1", "ToolCall", Span.Status.OK, 0, Map.of()));
+        turn.spans().add(new Span("r-1", 2, 1, Span.Kind.TOOL, "order_status {orderId=ORD-1}", ORDER,
+                Span.Status.OK, 1, Map.of("tool", "order_status")));
+        turn.spans().add(new Span("r-1", 3, 2, Span.Kind.LLM, "pass 2", "ToolCall", Span.Status.OK, 0, Map.of()));
+        turn.spans().add(new Span("r-1", 4, 2, Span.Kind.TOOL, "shipping_status {shipmentId=SHP-1}", SHIPMENT,
+                Span.Status.OK, 1, Map.of("tool", "shipping_status")));
+        turn.spans().add(new Span("r-1", 5, 3, Span.Kind.LLM, "pass 3", "Done[]", Span.Status.OK, 0, Map.of()));
+
+        assertEquals(ORDER + "\n" + SHIPMENT, summarizer.summarize(turn), "the whole turn, not the last pass");
     }
 
     @Test
@@ -47,7 +65,7 @@ class RelaySummarizerTest {
     }
 
     @Test
-    void severalToolsInTheLastPassAreJoinedWithNewlinesInRequestOrder() {
+    void severalToolsInOnePassAreJoinedWithNewlinesInRequestOrder() {
         Turn turn = new Turn("order ORD-2 and PRD-1");
         turn.spans().add(new Span("r-1", 1, 1, Span.Kind.LLM, "pass 1", "ToolCalls[...]", Span.Status.OK, 0, Map.of()));
         turn.spans().add(new Span("r-1", 2, 1, Span.Kind.TOOL, "order_status {orderId=ORD-2}", "Order ORD-2: PROCESSING",
@@ -62,16 +80,17 @@ class RelaySummarizerTest {
     }
 
     @Test
-    void onlyTheLastPassCountsAndAFailedSiblingIsNamedInItsPlace() {
+    void everyPassCountsAndAFailedRowIsNamedInItsPlace() {
         Turn turn = new Turn("x");
         turn.spans().add(new Span("r-1", 2, 1, Span.Kind.TOOL, "order_status {orderId=ORD-3}", "Order ORD-3: DELIVERED, shipment SHP-3",
                 Span.Status.OK, 1, Map.of("tool", "order_status")));
-        turn.spans().add(new Span("r-1", 4, 2, Span.Kind.TOOL, "order_status {orderId=ORD-1}", "Order ORD-1: SHIPPED, shipment SHP-1",
+        turn.spans().add(new Span("r-1", 4, 2, Span.Kind.TOOL, "order_status {orderId=ORD-1}", ORDER,
                 Span.Status.OK, 1, Map.of("tool", "order_status")));
         turn.spans().add(new Span("r-1", 5, 2, Span.Kind.TOOL, "throw_boom {}", "Tool failed: boom",
                 Span.Status.ERROR, 1, Map.of("tool", "throw_boom")));
 
-        assertEquals("Order ORD-1: SHIPPED, shipment SHP-1\nTool throw_boom ERROR: Tool failed: boom", summarizer.summarize(turn));
+        assertEquals("Order ORD-3: DELIVERED, shipment SHP-3\n" + ORDER + "\nTool throw_boom ERROR: Tool failed: boom",
+                summarizer.summarize(turn));
     }
 
     @Test
@@ -85,5 +104,31 @@ class RelaySummarizerTest {
                 Span.Status.DEDUPED, 0, Map.of("tool", "order_status", "ref", "2")));
 
         assertEquals("Order ORD-1: SHIPPED", summarizer.summarize(second));
+    }
+
+    @Test
+    void aDedupedRowInTheSameTurnRelaysItsOriginalInItsPlace() {
+        Turn turn = new Turn("order ORD-1, twice");
+        turn.spans().add(new Span("r-1", 2, 1, Span.Kind.TOOL, "order_status {orderId=ORD-1}", ORDER,
+                Span.Status.OK, 1, Map.of("tool", "order_status")));
+        turn.spans().add(new Span("r-1", 4, 2, Span.Kind.TOOL, "order_status {orderId=ORD-1}", "unchanged, see step 2",
+                Span.Status.DEDUPED, 0, Map.of("tool", "order_status", "ref", "2")));
+
+        assertEquals(ORDER + "\n" + ORDER, summarizer.summarize(turn), "each call row once, the repeat through the step it points at");
+    }
+
+    @Test
+    void aChildsRowsAreNotRelayedTheAgentRowIs() {
+        Turn turn = new Turn("Where is shipment SHP-1 for my order?");
+        turn.spans().add(new Span("r-1", 1, 1, Span.Kind.LLM, "pass 1", "ToolCall", Span.Status.OK, 0, Map.of()));
+        turn.spans().add(new Span("r-1", 2, 1, Span.Kind.LLM, "pass 1", "ToolCall", Span.Status.OK, 0, Map.of("parent", "1", "depth", "1")));
+        turn.spans().add(new Span("r-1", 3, 1, Span.Kind.TOOL, "shipping_status {shipmentId=SHP-1}", SHIPMENT,
+                Span.Status.OK, 1, Map.of("tool", "shipping_status", "parent", "1", "depth", "1")));
+        turn.spans().add(new Span("r-1", 4, 2, Span.Kind.LLM, "pass 2", "Done[]", Span.Status.OK, 0, Map.of("parent", "1", "depth", "1")));
+        turn.spans().add(new Span("r-1", 5, 1, Span.Kind.AGENT, "ask_logistics {goal=...}", SHIPMENT,
+                Span.Status.OK, 3, Map.of("tool", "ask_logistics")));
+        turn.spans().add(new Span("r-1", 6, 2, Span.Kind.LLM, "pass 2", "Done[]", Span.Status.OK, 0, Map.of()));
+
+        assertEquals(SHIPMENT, summarizer.summarize(turn), "the child's answer once, through the AGENT row, as the rows a resume loads would show it");
     }
 }

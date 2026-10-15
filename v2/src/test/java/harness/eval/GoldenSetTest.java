@@ -29,8 +29,8 @@ class GoldenSetTest {
     private final EvalRunner runner = new EvalRunner(quickAgents(), ToolLoader.load(Path.of("tools")));
 
     @Test
-    void theGoldenSetHasTwelveCasesOverTheThreeAgents() {
-        assertEquals(12, cases.size());
+    void theGoldenSetHasThirteenCasesOverTheThreeAgents() {
+        assertEquals(13, cases.size());
         assertEquals(Set.of("support", "inventory", "chaos"), cases.stream().map(GoldenCase::agent).collect(Collectors.toSet()));
         assertEquals(List.of("hang_forever"), cases.get(5).expectTools(), "the hang case is in");
     }
@@ -52,7 +52,7 @@ class GoldenSetTest {
         assertEquals(List.of(), cutShort, "stopped_by_done at 100%");
         assertEquals(List.of(), hidden, "errors_surfaced at 100%");
         String footer = EvalRunner.footer(results);
-        assertTrue(footer.contains("stopped_by_done 12/12 · errors_surfaced 12/12"), footer);
+        assertTrue(footer.contains("stopped_by_done 13/13 · errors_surfaced 13/13"), footer);
         assertTrue(footer.startsWith("harness: tool_choice ") && footer.contains(" | agent: answer "), footer);
 
         CaseResult hang = results.get(5);

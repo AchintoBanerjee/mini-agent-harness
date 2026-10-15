@@ -1,6 +1,6 @@
 [
   { "question": "What is the status of order ORD-1?", "agent": "support",
-    "expectTools": ["order_status"], "answerContains": "SHIPPED", "maxPasses": 3 },
+    "expectTools": ["order_status", "shipping_status"], "answerContains": "SHIPPED", "maxPasses": 3 },
   { "question": "Where is my shipment SHP-1?", "agent": "support",
     "expectTools": ["shipping_status"], "answerContains": "IN TRANSIT", "maxPasses": 3 },
   { "question": "Is product PRD-2 available?", "agent": "support",
@@ -22,5 +22,7 @@
   { "question": "reorder ORD-1", "agent": "support",
     "expectTools": [], "answerContains": "No tool", "maxPasses": 3 },
   { "question": "track my parcel SHP-3", "agent": "support",
-    "expectTools": ["shipping_status"], "answerContains": "DELIVERED", "maxPasses": 3 }
+    "expectTools": ["shipping_status"], "answerContains": "DELIVERED", "maxPasses": 3 },
+  { "question": "Where is my order ORD-3?", "agent": "support",
+    "expectTools": ["order_status", "shipping_status"], "answerContains": "DELIVERED", "maxPasses": 3 }
 ]

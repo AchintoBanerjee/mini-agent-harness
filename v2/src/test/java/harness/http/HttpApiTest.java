@@ -45,8 +45,14 @@ class HttpApiTest {
 
     private static final ObjectMapper JSON = new ObjectMapper();
     private static final String QUESTION = "What is the status of order ORD-1?";
-    private static final String ANSWER = "Order ORD-1: SHIPPED, shipment SHP-1";
-    private static final List<String> PIECES = List.of("Order ", "ORD-1: ", "SHIPPED, ", "shipment ", "SHP-1");
+    private static final String ORDER = "Order ORD-1: SHIPPED, shipment SHP-1";
+    private static final String ANSWER = ORDER + "\nShipment SHP-1: IN TRANSIT, arriving 2026-10-16";
+    private static final List<String> PIECES = List.of("Order ", "ORD-1: ", "SHIPPED, ", "shipment ", "SHP-1\nShipment ",
+            "SHP-1: ", "IN ", "TRANSIT, ", "arriving ", "2026-10-16");
+    /** The canonical turn's stream: five rows, ten pieces, then done without an id. */
+    private static final List<String> STREAM_IDS = Arrays.asList("1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12", "13", "14", "15", null);
+    private static final List<String> STREAM_EVENTS = List.of("step", "step", "step", "step", "step",
+            "token", "token", "token", "token", "token", "token", "token", "token", "token", "token", "done");
     private static final Pattern TOGETHER = Pattern.compile("ran (\\d+) tools together: wall (\\d+) ms, work (\\d+) ms");
     private static final Path AGENTS = Path.of("agents");
     private static final Path TOOLS = Path.of("tools");
@@ -67,7 +73,7 @@ class HttpApiTest {
         Path golden = dir.resolve("golden.json");
         Files.writeString(golden, """
                 [ { "question": "What is the status of order ORD-1?", "agent": "support",
-                    "expectTools": ["order_status"], "answerContains": "SHIPPED", "maxPasses": 3 },
+                    "expectTools": ["order_status", "shipping_status"], "answerContains": "SHIPPED", "maxPasses": 3 },
                   { "question": "boom", "agent": "chaos",
                     "expectTools": ["throw_boom"], "answerContains": "ERROR", "maxPasses": 3 },
                   { "question": "track my parcel SHP-3", "agent": "support",
@@ -158,9 +164,12 @@ class HttpApiTest {
         assertEquals(QUESTION, turn.get("question").asText());
         assertEquals("test-worker", turn.get("claimedBy").asText());
         assertEquals(1, turn.get("attempts").asInt());
-        assertEquals(List.of("LLM", "TOOL", "LLM"), turn.get("spans").findValuesAsText("kind"));
-        assertEquals(List.of(1, 2, 3), turn.get("spans").findValues("span").stream().map(JsonNode::asInt).toList());
+        assertEquals(List.of("LLM", "TOOL", "LLM", "TOOL", "LLM"), turn.get("spans").findValuesAsText("kind"),
+                "the order, then the shipment its result names, then done");
+        assertEquals(List.of(1, 2, 3, 4, 5), turn.get("spans").findValues("span").stream().map(JsonNode::asInt).toList());
         assertEquals(id + "/1", turn.get("spans").get(1).get("attrs").get("key").asText(), "the TOOL span's key: turn id plus the deciding span");
+        assertEquals("shipping_status", turn.get("spans").get(3).get("attrs").get("tool").asText());
+        assertEquals(id + "/3", turn.get("spans").get(3).get("attrs").get("key").asText(), "decided by pass 2's row");
         assertEquals(ANSWER, turn.get("answer").asText());
         assertEquals(0, queue.size(), "acked");
         assertEquals(turn, JSON.readTree(get("/runs/" + id).body()), "/runs/{id} is the same turn");
@@ -181,25 +190,24 @@ class HttpApiTest {
         assertEquals(200, stream.statusCode());
         assertEquals("text/event-stream; charset=utf-8", stream.headers().firstValue("Content-Type").orElse(""));
         List<Event> events = events(stream.body());
-        assertEquals(List.of("step", "step", "step", "token", "token", "token", "token", "token", "done"),
-                events.stream().map(Event::event).toList(), "the rows as the worker wrote them, then the answer as the model produced it");
-        assertEquals(Arrays.asList("1", "2", "3", "4", "5", "6", "7", "8", null), events.stream().map(Event::id).toList(),
-                "the event id is the entry's number in the run's stream; done has none");
+        assertEquals(STREAM_EVENTS, events.stream().map(Event::event).toList(), "the rows as the worker wrote them, then the answer as the model produced it");
+        assertEquals(STREAM_IDS, events.stream().map(Event::id).toList(), "the event id is the entry's number in the run's stream; done has none");
         assertEquals("TOOL", JSON.readTree(events.get(1).data()).get("kind").asText());
         assertEquals(id, JSON.readTree(events.get(1).data()).get("turnId").asText());
+        assertEquals("shipping_status", JSON.readTree(events.get(3).data()).get("attrs").get("tool").asText(), "the chained call is a step like any");
         assertEquals(PIECES, tokens(events), "one word per piece, the space kept");
         assertEquals(ANSWER, String.join("", tokens(events)), "the pieces concatenate to the answer");
-        assertEquals(id, JSON.readTree(events.get(3).data()).get("turnId").asText(), "a token names its turn");
+        assertEquals(id, JSON.readTree(events.get(5).data()).get("turnId").asText(), "a token names its turn");
         assertEquals(ANSWER, JSON.readTree(events.getLast().data()).get("answer").asText());
         assertEquals("DONE", JSON.readTree(events.getLast().data()).get("status").asText());
 
         List<Event> tail = events(send(HttpRequest.newBuilder(uri("/turns/" + id + "/events")).header("Last-Event-ID", "2").build()).body());
-        assertEquals(Arrays.asList("3", "4", "5", "6", "7", "8", null), tail.stream().map(Event::id).toList(), "only what came after 2, then done");
-        assertEquals(List.of("step", "token", "token", "token", "token", "token", "done"), tail.stream().map(Event::event).toList());
+        assertEquals(STREAM_IDS.subList(2, STREAM_IDS.size()), tail.stream().map(Event::id).toList(), "only what came after 2, then done");
+        assertEquals(STREAM_EVENTS.subList(2, STREAM_EVENTS.size()), tail.stream().map(Event::event).toList());
 
-        List<Event> onlyTheAnswer = events(get("/runs/" + id + "/events?after=3").body());
-        assertEquals(List.of("token", "token", "token", "token", "token", "done"), onlyTheAnswer.stream().map(Event::event).toList());
-        assertEquals(List.of("done"), events(get("/runs/" + id + "/events?after=8").body()).stream().map(Event::event).toList(),
+        List<Event> onlyTheAnswer = events(get("/runs/" + id + "/events?after=5").body());
+        assertEquals(STREAM_EVENTS.subList(5, STREAM_EVENTS.size()), onlyTheAnswer.stream().map(Event::event).toList());
+        assertEquals(List.of("done"), events(get("/runs/" + id + "/events?after=15").body()).stream().map(Event::event).toList(),
                 "a client that has everything still gets done");
 
         assertEquals(404, get("/turns/r-0000/events").statusCode());
@@ -255,12 +263,12 @@ class HttpApiTest {
             events = events(new String(body.readAllBytes(), StandardCharsets.UTF_8));
         }
 
-        assertEquals(Arrays.asList("1", "2", "3", null), events.stream().map(Event::id).toList(),
+        assertEquals(Arrays.asList("1", "2", "3", "4", "5", null), events.stream().map(Event::id).toList(),
                 "the early reader waited one read, found the turn ended and its stream empty, and got the saved rows");
         long started = System.nanoTime();
         List<Event> later = events(get("/turns/" + id + "/events").body());
         assertTrue((System.nanoTime() - started) / 1_000_000 < 500, "the empty stream was dropped: a later reader replays at once");
-        assertEquals(Arrays.asList("1", "2", "3", null), later.stream().map(Event::id).toList());
+        assertEquals(Arrays.asList("1", "2", "3", "4", "5", null), later.stream().map(Event::id).toList());
     }
 
     @Test
@@ -271,12 +279,12 @@ class HttpApiTest {
 
         List<Event> events = events(get("/turns/" + id + "/events").body());
 
-        assertEquals(List.of("step", "step", "step", "done"), events.stream().map(Event::event).toList(),
+        assertEquals(List.of("step", "step", "step", "step", "step", "done"), events.stream().map(Event::event).toList(),
                 "the fallback: the saved rows, no tokens, because no stream was ever fed for this turn");
-        assertEquals(Arrays.asList("1", "2", "3", null), events.stream().map(Event::id).toList(), "the ids are the span numbers");
+        assertEquals(Arrays.asList("1", "2", "3", "4", "5", null), events.stream().map(Event::id).toList(), "the ids are the span numbers");
         assertEquals(ANSWER, JSON.readTree(events.getLast().data()).get("answer").asText(), "done comes from the turn row");
         List<Event> tail = events(get("/turns/" + id + "/events?after=2").body());
-        assertEquals(Arrays.asList("3", null), tail.stream().map(Event::id).toList(), "after is a span number on this path");
+        assertEquals(Arrays.asList("3", "4", "5", null), tail.stream().map(Event::id).toList(), "after is a span number on this path");
     }
 
     @Test
@@ -296,11 +304,10 @@ class HttpApiTest {
         assertEquals("LLM", JSON.readTree(first.data()).get("kind").asText(), "the first row arrived while the turn was live");
 
         JsonNode turn = awaitDone(id);
-        assertEquals(3, turn.get("spans").size(), "the turn finished although its listener left");
+        assertEquals(5, turn.get("spans").size(), "the turn finished although its listener left");
         assertEquals(ANSWER, turn.get("answer").asText());
         List<Event> whole = events(get("/turns/" + id + "/events").body());
-        assertEquals(Arrays.asList("1", "2", "3", "4", "5", "6", "7", "8", null), whole.stream().map(Event::id).toList(),
-                "the stream is still held: three rows, five pieces, done");
+        assertEquals(STREAM_IDS, whole.stream().map(Event::id).toList(), "the stream is still held: five rows, ten pieces, done");
         assertEquals(ANSWER, String.join("", tokens(whole)));
     }
 
@@ -339,11 +346,12 @@ class HttpApiTest {
         JsonNode turn = awaitDone(second.get("turnId").asText());
         assertEquals("support", turn.get("agent").asText(), "the conversation's agent");
         JsonNode spans = turn.get("spans");
-        assertEquals(List.of(4, 5, 6), spans.findValues("span").stream().map(JsonNode::asInt).toList(), "numbered on from the first turn");
+        assertEquals(List.of(6, 7, 8), spans.findValues("span").stream().map(JsonNode::asInt).toList(),
+                "numbered on from the first turn's five; a reference names no id, so nothing chains");
         assertEquals("DEDUPED", spans.get(1).get("status").asText());
         assertEquals("unchanged, see step 2", spans.get(1).get("response").asText());
         assertEquals("2", spans.get(1).get("attrs").get("ref").asText(), "the first turn's TOOL row");
-        assertEquals(ANSWER, turn.get("answer").asText(), "the earlier output, relayed");
+        assertEquals(ORDER, turn.get("answer").asText(), "the earlier output, relayed");
         assertEquals(1, ToolLoader.HANDLER_CALLS.get("order_status"), "the handler ran once for the two turns");
 
         assertEquals(400, post("/runs", "{\"conversationId\":\"c-0000\",\"question\":\"q\"}").statusCode());
@@ -372,14 +380,16 @@ class HttpApiTest {
         assertEquals("DONE", done.get("status").asText());
         assertEquals("worker-b", done.get("claimedBy").asText());
         assertEquals(2, done.get("attempts").asInt());
-        assertEquals(List.of("LLM", "TOOL", "NOTE", "LLM"), done.get("spans").findValuesAsText("kind"));
+        assertEquals(List.of("LLM", "TOOL", "NOTE", "LLM", "TOOL", "LLM"), done.get("spans").findValuesAsText("kind"),
+                "the second worker continues the chain: pass 2 asks for the shipment the saved result names");
         assertEquals("resumed from step 2", done.get("spans").get(2).get("request").asText());
+        assertEquals("shipping_status", done.get("spans").get(4).get("attrs").get("tool").asText());
         assertEquals(ANSWER, done.get("answer").asText());
         assertEquals(1, ToolLoader.HANDLER_CALLS.get("order_status"), "the saved tool call did not run again");
         List<Event> events = events(get("/turns/" + id + "/events").body());
-        assertEquals(List.of("step", "step", "step", "step", "done"), events.stream().map(Event::event).toList(),
+        assertEquals(List.of("step", "step", "step", "step", "step", "step", "done"), events.stream().map(Event::event).toList(),
                 "neither worker was wired to the stream, so this is the fallback: the saved rows once, no tokens");
-        assertEquals(Arrays.asList("1", "2", "3", "4", null), events.stream().map(Event::id).toList(),
+        assertEquals(Arrays.asList("1", "2", "3", "4", "5", "6", null), events.stream().map(Event::id).toList(),
                 "the ids are the span numbers: the rows, whoever wrote them");
         assertEquals("resumed from step 2", JSON.readTree(events.get(2).data()).get("request").asText());
         assertEquals(ANSWER, JSON.readTree(events.getLast().data()).get("answer").asText());
@@ -427,8 +437,8 @@ class HttpApiTest {
         assertEquals(3, cases.size());
         assertEquals(1, cases.get(0).get("n").asInt());
         assertTrue(cases.get(0).get("passed").asBoolean());
-        assertEquals(List.of("order_status"), texts(cases.get(0).get("tools")));
-        assertEquals(2, cases.get(0).get("passes").asInt());
+        assertEquals(List.of("order_status", "shipping_status"), texts(cases.get(0).get("tools")), "the chained call counts as a choice");
+        assertEquals(3, cases.get(0).get("passes").asInt());
         assertEquals(ANSWER, cases.get(0).get("answer").asText());
         assertTrue(cases.get(1).get("passed").asBoolean(), "the throw is named in the answer");
         assertEquals("Tool throw_boom ERROR: Tool failed: boom", cases.get(1).get("answer").asText());

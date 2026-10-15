@@ -82,18 +82,18 @@ header "agents and tools: metadata files, read over GET /agents and GET /tools"
 curl_show -s "$base/agents"
 curl_show -s "$base/tools"
 
-header "a turn: POST /runs answers with the turn id at once; GET /turns/{id} once the worker is done"
+header "a turn that chains: POST /runs answers with the turn id at once; GET /turns/{id} once the worker is done shows the model asking for the order, reading the shipment id in the result, asking for the shipment, then saying done"
 ticket=$(curl_show -s -X POST "$base/runs" -d '{"agent":"support","question":"What is the status of order ORD-1?"}')
 printf '%s\n' "$ticket"
 turn_id=$(turn_id_of "$ticket")
 if [ -z "$turn_id" ]; then echo "no turn id in the POST reply"; exit 1; fi
 conversation_id=$(printf '%s\n' "$ticket" | sed -n 's/.*"conversationId" *: *"\(c-[0-9a-f]*\)".*/\1/p')
-echo "(202 came back at once with the turn QUEUED; the worker took it, and one second later the turn row says DONE, who ran it, the answer, and the spans:)"
+echo "(202 came back at once with the turn QUEUED; the worker took it, and one second later the turn row says DONE, who ran it, the answer, and the spans: five rows over three passes. Pass 1 asks for the order; pass 2 reads SHP-1 in the order's result and asks for the shipment, decided from that row, not from the question; pass 3 says done because the results name nothing new. The answer relays both results, one line each:)"
 sleep 1
 curl_show -s "$base/turns/$turn_id"
 
 header "the stream: GET /turns/{id}/events sends every step and every piece of the answer as it happens, then done; a reconnect with Last-Event-ID gets only the tail"
-echo "(the worker pushed each event to the server as the loop raised it; the server holds the run's stream and a client reads it from the last id it saw: the three steps, then the answer word by word, then done)"
+echo "(the worker pushed each event to the server as the loop raised it; the server holds the run's stream and a client reads it from the last id it saw: the five steps, then the answer word by word, then done)"
 curl_show -sN --max-time 5 "$base/turns/$turn_id/events"
 echo "(a client that reconnects sends the last id it saw:)"
 curl_show -sN --max-time 5 -H 'Last-Event-ID: 2' "$base/turns/$turn_id/events"
@@ -110,7 +110,7 @@ printf '%s\n' "$ticket"
 again_id=$(turn_id_of "$ticket")
 if [ -z "$again_id" ]; then echo "no turn id in the POST reply"; exit 1; fi
 sleep 1
-echo "(the spans are numbered on from the first turn; the TOOL span is DEDUPED and points at span 2 of the first turn:)"
+echo "(the spans are numbered on from the first turn; the TOOL span is DEDUPED and points at span 2 of the first turn; a reference names no id, so nothing chains and the turn is three rows:)"
 curl_show -s "$base/turns/$again_id"
 
 echo
@@ -166,7 +166,7 @@ printf '%s\n' "$sub_out"
 dur_id=$(printf '%s\n' "$sub_out" | sed -n 's/^submitted \(r-[0-9a-f]*\) .*/\1/p')
 if [ -z "$dur_id" ]; then echo "no turn id in the submit output"; exit 1; fi
 curl_show -s "$base/turns/$dur_id"
-echo "(a worker takes it with a 2000 ms lease and dies right after its 2nd row is persisted: exit 3, no ack)"
+echo "(a worker takes it with a 2000 ms lease and dies right after its 2nd row is persisted: exit 3, no ack; the order lookup ran once in this process, so the crash line counts order_status=1)"
 crash_out=$(harness worker --once --crash-after 2 --visibility-ms 2000 --api "$base")
 status=$?
 printf '%s\n' "$crash_out"
@@ -174,9 +174,9 @@ if [ "$status" -ne 3 ]; then echo "expected exit 3 from the simulated crash, got
 echo "(process exited with code $status; the turn row says RUNNING, the message is still queued but hidden until the lease runs out)"
 echo '$ sleep 2'
 sleep 2
-echo "(the lease has run out, so the next worker receives the same message again and resumes from the last saved step:)"
+echo "(the lease has run out, so the next worker receives the same message again and resumes from the last saved step: it does not run the saved order_status call again, it continues the chain at pass 2, reads SHP-1 in the saved result, asks for the shipment and says done; its footer counts shipping_status=1 only, because order_status ran in the process that died:)"
 must worker --once --api "$base"
-echo "(the API reads the same rows, whoever wrote them: DONE, attempt 2, claimed by the second worker's pid, all four spans)"
+echo "(the API reads the same rows, whoever wrote them: DONE, attempt 2, claimed by the second worker's pid, all six spans, the answer with both lines)"
 curl_show -s "$base/turns/$dur_id"
 
 header "eval over HTTP: POST /evals scores the golden set in the server; two FAILs left in on purpose"

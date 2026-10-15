@@ -25,12 +25,16 @@ import org.junit.jupiter.api.Test;
 /**
  * Interrupt and resume. A crash is an exception thrown from inside the loop: before the
  * tool runs (the LLM row is already stored) or after it ran (its TOOL row is not). A
- * second orchestrator over the same in-memory store resumes the run from its rows.
+ * second orchestrator over the same in-memory store resumes the run from its rows. The
+ * canonical turn chains: the order's result names a shipment, so a resumed turn goes on
+ * to look that shipment up.
  */
 class ResumeTest {
 
     private static final String QUESTION = "What is the status of order ORD-1?";
-    private static final String ANSWER = "Order ORD-1: SHIPPED, shipment SHP-1";
+    private static final String ORDER = "Order ORD-1: SHIPPED, shipment SHP-1";
+    private static final String SHIPMENT = "Shipment SHP-1: IN TRANSIT, arriving 2026-10-16";
+    private static final String ANSWER = ORDER + "\n" + SHIPMENT;
 
     private final ToolRegistry registry = ToolLoader.load(Path.of("tools"));
     private final Agent agent = AgentLoader.load(Path.of("agents", "support.json"));
@@ -53,13 +57,14 @@ class ResumeTest {
         assertEquals(ANSWER, orchestrator(new ToolCaller(registry)).resume(runId));
 
         List<Span> rows = store.load(runId);
-        assertEquals(List.of(Span.Kind.LLM, Span.Kind.NOTE, Span.Kind.TOOL, Span.Kind.LLM), kinds(rows));
-        assertEquals(List.of(1, 2, 3, 4), rows.stream().map(Span::span).toList());
+        assertEquals(List.of(Span.Kind.LLM, Span.Kind.NOTE, Span.Kind.TOOL, Span.Kind.LLM, Span.Kind.TOOL, Span.Kind.LLM), kinds(rows));
+        assertEquals(List.of(1, 2, 3, 4, 5, 6), rows.stream().map(Span::span).toList());
         assertEquals("resumed from step 1", rows.get(1).request());
         assertEquals(runId + "/1", rows.get(2).attrs().get("key"), "the key names the row that decided the call");
         assertEquals(1, handlerCalls("order_status"));
+        assertEquals(1, handlerCalls("shipping_status"), "the chain ran on from the resumed result");
         assertEquals(1, llm.decisionAsks, "the model was asked once for the decided step");
-        assertEquals(2, llm.asks, "once to decide, once to say Done");
+        assertEquals(3, llm.asks, "once to decide, once to chain, once to say Done");
     }
 
     @Test
@@ -73,14 +78,14 @@ class ResumeTest {
         assertEquals(ANSWER, orchestrator(new ToolCaller(registry)).resume(runId));
 
         List<Span> rows = store.load(runId);
-        assertEquals(List.of(Span.Kind.LLM, Span.Kind.NOTE, Span.Kind.TOOL, Span.Kind.LLM), kinds(rows));
+        assertEquals(List.of(Span.Kind.LLM, Span.Kind.NOTE, Span.Kind.TOOL, Span.Kind.LLM, Span.Kind.TOOL, Span.Kind.LLM), kinds(rows));
         assertEquals(2, handlerCalls("order_status"), "at-least-once: the same decision ran twice");
         assertEquals(runId + "/1", rows.get(2).attrs().get("key"), "both runs of the call carry the same key");
         assertEquals(1, llm.decisionAsks);
     }
 
     @Test
-    void crashAfterTheToolRowIsPersistedResumesIntoTheNextPass() {
+    void crashAfterTheToolRowIsPersistedResumesIntoTheNextPassAndTheChainContinues() {
         RunListener dieAfterRow2 = span -> {
             if (span.span() == 2) {
                 throw new Crash();
@@ -91,23 +96,31 @@ class ResumeTest {
         String runId = first.conversation().turns().getLast().id();
         assertEquals(List.of(Span.Kind.LLM, Span.Kind.TOOL), kinds(store.load(runId)));
 
-        assertEquals(ANSWER, orchestrator(new ToolCaller(registry)).resume(runId));
+        assertEquals(ANSWER, orchestrator(new ToolCaller(registry)).resume(runId), "the answer has both lines");
 
         List<Span> rows = store.load(runId);
-        assertEquals(List.of(Span.Kind.LLM, Span.Kind.TOOL, Span.Kind.NOTE, Span.Kind.LLM), kinds(rows));
+        assertEquals(List.of(Span.Kind.LLM, Span.Kind.TOOL, Span.Kind.NOTE, Span.Kind.LLM, Span.Kind.TOOL, Span.Kind.LLM), kinds(rows));
+        assertEquals(List.of(1, 2, 3, 4, 5, 6), rows.stream().map(Span::span).toList());
         assertEquals("resumed from step 2", rows.get(2).request());
         assertEquals(2, rows.get(3).pass(), "the loop carries on at the next pass");
-        assertEquals(1, handlerCalls("order_status"), "nothing was pending, nothing ran again");
+        assertEquals("shipping_status", rows.get(3).attrs().get("tool"), "pass 2 reads SHP-1 in the saved result");
+        assertEquals("SHP-1", rows.get(3).attrs().get("shipmentId"));
+        assertEquals(SHIPMENT, rows.get(4).response());
+        assertEquals(runId + "/4", rows.get(4).attrs().get("key"));
+        assertEquals("Done[]", rows.get(5).response());
+        assertEquals(3, rows.get(5).pass());
+        assertEquals(1, handlerCalls("order_status"), "nothing was pending, the saved call did not run again");
+        assertEquals(1, handlerCalls("shipping_status"));
     }
 
     @Test
     void resumeRebuildsEarlierTurnsAndFinishesTheInterruptedOne() {
-        RunListener dieAfterRow4 = span -> {
-            if (span.span() == 4) {
+        RunListener dieAfterRow6 = span -> {
+            if (span.span() == 6) {
                 throw new Crash();
             }
         };
-        Orchestrator first = new Orchestrator(agent, registry, llm, new ToolCaller(registry), store, dieAfterRow4);
+        Orchestrator first = new Orchestrator(agent, registry, llm, new ToolCaller(registry), store, dieAfterRow6);
         assertEquals(ANSWER, first.run(QUESTION));
         assertThrows(Crash.class, () -> first.run("Is product PRD-1 available?"));
         String runId = first.conversation().turns().getLast().id();
@@ -120,8 +133,8 @@ class ResumeTest {
         assertEquals(QUESTION, turns.get(0).question());
         assertEquals(ANSWER, turns.get(0).answer());
         assertEquals("Is product PRD-1 available?", turns.get(1).question());
-        assertEquals(3, store.load(turns.get(0).id()).size(), "the first turn's rows are its own");
-        assertEquals(List.of(4, 5, 6, 7), store.load(runId).stream().map(Span::span).toList(), "the second turn's rows are numbered on");
+        assertEquals(5, store.load(turns.get(0).id()).size(), "the first turn's rows are its own");
+        assertEquals(List.of(6, 7, 8, 9), store.load(runId).stream().map(Span::span).toList(), "the second turn's rows are numbered on");
     }
 
     @Test
@@ -132,8 +145,9 @@ class ResumeTest {
 
         assertEquals(ANSWER, orchestrator(new ToolCaller(registry)).resume(runId));
 
-        assertEquals(3, store.load(runId).size());
+        assertEquals(5, store.load(runId).size());
         assertEquals(1, handlerCalls("order_status"));
+        assertEquals(1, handlerCalls("shipping_status"));
     }
 
     @Test
@@ -147,7 +161,10 @@ class ResumeTest {
         assertEquals("ORD-1", rows.get(0).attrs().get("orderId"));
         assertEquals(QUESTION, rows.get(0).attrs().get("question"));
         assertEquals(runId + "/1", rows.get(1).attrs().get("key"));
-        assertFalse(rows.get(2).attrs().containsKey("tool"), "Done decides no call");
+        assertEquals("shipping_status", rows.get(2).attrs().get("tool"), "pass 2 decided the chained call");
+        assertEquals("SHP-1", rows.get(2).attrs().get("shipmentId"));
+        assertEquals(runId + "/3", rows.get(3).attrs().get("key"));
+        assertFalse(rows.get(4).attrs().containsKey("tool"), "Done decides no call");
     }
 
     private Orchestrator orchestrator(ToolCaller toolCaller) {
