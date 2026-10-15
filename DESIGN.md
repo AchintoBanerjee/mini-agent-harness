@@ -2,7 +2,7 @@
 
 One page that ties the pages together, in the order they were built: what was built live, what v2 adds, then the deep dives. Read this for the story, each page for the depth, `./demo.sh` for the proof (`docs/demo-output.txt` is its saved output). The brief is [PROBLEM.md](PROBLEM.md).
 
-[1 · v1](#1--v1-what-i-built-live) · [2 · v2 HLD](#2--v2-the-harness-as-a-small-service) · [3 · Additional features](#3--v2-additional-features) · [4 · Durability](#4--durability) · [5 · Scaling](#5--scaling) · [6 · Performance](#6--performance) · [7 · Sub-agents](#7--sub-agents) · [8 · Measuring](#8--measuring-the-harness) · [9 · Routing across providers](#9--routing-across-providers) · [10 · Sandboxing tools](#10--sandboxing-tools) · [11 · The picture at the end](#11--the-picture-at-the-end) · [12 · Next](#12--what-i-would-build-next-in-order)
+[1 · v1](#1--v1-what-i-built-live) · [2 · v2 HLD](#2--v2-the-harness-as-a-small-service) · [3 · Additional features](#3--v2-additional-features) · [4 · Durability](#4--durability) · [5 · Scaling](#5--scaling) · [6 · Performance](#6--performance) · [7 · Sub-agents](#7--sub-agents) · [8 · Measuring](#8--measuring-the-harness) · [9 · The picture at the end](#9--the-picture-at-the-end) · [10 · Next](#10--what-i-would-build-next-in-order)
 
 ## 1 · v1: what I built live
 
@@ -64,31 +64,11 @@ Page: [docs/EVAL.md](docs/EVAL.md)
 
 - Two questions, never one score: did the loop do its job, was the answer right. A golden set with the expected trace before ship, built; a sampled judge live with named rates per agent version, designed. The harness scores are facts in the rows and code scores them exactly.
 
-## 9 · Routing across providers
-
-Design, from running a harness in production at scale; nothing of it is in v2 beyond the seam.
-
-- The seam is the model interface: the loop asks for a reply and streams it; it never knows which provider answered. v2 has that interface with a rule stub behind it; a real model goes behind it unchanged.
-- In production a gateway sits behind that interface and in front of every provider. It picks the route by tenant and by the agent's tier, holds the credentials, retries a dropped call, and counts the tokens per tenant and model. The loop never carries a provider key.
-- Three ways to host a model, and a tenant chooses per agent: a dedicated endpoint the tenant pays for, a shared on-demand pool, or the tenant's own key with its own provider. The gateway is where that choice lives, so an agent moves between them without changing.
-- The shared pool is where every tenant meets: that is the governor on the scaling page, the fair share and the room.
-- What I ran, on my platform in production: the three hosting choices behind one gateway, dedicated, on demand and bring your own, with the tokens counted per tenant and model at the gateway. Routing by cost or by quality across providers for one agent is the design; the gateway is where it goes.
-
-## 10 · Sandboxing tools
-
-Design, from the same experience; v2 has the first level and the gate.
-
-- A tool runs where the harness binds it, and the question is how much of the harness it can reach. Four levels, each a step away from the loop: in the loop's process, as an adapter; a separate process with limits on time, memory and the file system; a container per task, thrown away after; a remote sandbox the harness only talks to.
-- What picks the level is what the tool does. A lookup against a service needs none of this. A tool that runs code the model wrote needs the container, every time.
-- Whatever the level, the tool acts as the user, not as the platform: the user's own credentials, scoped to the call, never a platform key. The agent's tool list is the first gate; the credentials are the second.
-- v2: every tool is an adapter in the loop's process, under the agent's clock and the agent's tool list, which is the first level and the gate. The timeout and the list are proven on the features page.
-- What I ran, on my platform in production: tools calling the business systems as the user, with the user's own credentials passed through and scoped to the call. A container per task for code-running tools is what I built as a proof of concept on my own time, headless, with the approvals pre-gated; it is the level I would ship next for any tool that executes what a model wrote.
-
-## 11 · The picture at the end
+## 9 · The picture at the end
 
 Three diagrams, in the order the pages added them, are the harness at scale: [the split and the queue](docs/durability.svg), [the stream across pods](docs/scaling-stream.svg), [the governor in front of the GPU](docs/scaling-gpu.svg). Everything built in v2 keeps its seam in that picture: the API layer, the loop in the worker, the run's stream, the store, the model interface, the tool registry.
 
-## 12 · What I would build next, in order
+## 10 · What I would build next, in order
 
 1. The live loop of the eval: a sampled judge on a schedule, rates per agent version, a confirmed failure back into the golden set.
 2. The Redis Stream per job id and the dead-letter queue, replacing the two stand-ins.
