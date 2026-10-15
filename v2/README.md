@@ -5,14 +5,14 @@ files; every run is a step log in `runs/`, written before each step is acted on;
 resumes from its log; a runaway tool is cut off at the agent's timeout; independent tool calls
 run together; a repeated tool call is deduped inside a conversation; and a golden set scores the
 harness itself. The model is still a stub (`RuleBasedLLM`): no network, no keys. The design
-write-up is `../DESIGN.md` (it lands after the code steps); the live round's whiteboard is
+write-up is `../DESIGN.md`; the live round's whiteboard is
 `../docs/v1-whiteboard.png`.
 
 ## Build and test
 
 ```
 cd v2
-mvn -q test       # 76 tests, about 4 s
+mvn -q test       # 76 tests, about 5 s
 mvn -q compile    # classes to target/classes, Jackson (the only dependency) to target/lib
 ```
 

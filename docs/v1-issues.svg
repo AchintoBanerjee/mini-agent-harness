@@ -1,0 +1,87 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 484" width="960" height="484" font-family="Helvetica Neue, Helvetica, Arial, sans-serif">
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M2 1L8 5L2 9" fill="none" stroke="#57606A" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></marker>
+  </defs>
+  <rect x="0" y="0" width="960" height="484" fill="#FFFFFF"/>
+
+  <!-- Row 1 -->
+  <rect x="24" y="48" width="240" height="56" rx="8" fill="#F6F8FA" stroke="#8C959F" stroke-width="1"/>
+  <text x="38" y="70" font-size="15" font-weight="600" fill="#1F2328">User</text>
+  <text x="38" y="89" font-size="12.5" font-weight="400" fill="#57606A">via Main.java</text>
+
+  <rect x="360" y="48" width="240" height="56" rx="8" fill="#F6F8FA" stroke="#8C959F" stroke-width="1"/>
+  <text x="374" y="70" font-size="15" font-weight="600" fill="#1F2328">Orchestrator</text>
+  <text x="374" y="89" font-size="12.5" font-weight="400" fill="#57606A">the loop, 5 passes max</text>
+
+  <rect x="696" y="48" width="240" height="56" rx="8" fill="#F6F8FA" stroke="#8C959F" stroke-width="1"/>
+  <text x="710" y="70" font-size="15" font-weight="600" fill="#1F2328">LLMProxy</text>
+  <text x="710" y="89" font-size="12.5" font-weight="400" fill="#57606A">rule based, one shot</text>
+
+  <!-- Row 2 -->
+  <rect x="24" y="168" width="240" height="56" rx="8" fill="#F6F8FA" stroke="#8C959F" stroke-width="1"/>
+  <text x="38" y="190" font-size="15" font-weight="600" fill="#1F2328">Run store</text>
+  <text x="38" y="209" font-size="12.5" font-weight="400" fill="#57606A">in memory, dies with the run</text>
+
+  <rect x="360" y="168" width="240" height="56" rx="8" fill="#F6F8FA" stroke="#8C959F" stroke-width="1"/>
+  <text x="374" y="190" font-size="15" font-weight="600" fill="#1F2328">ToolCaller</text>
+  <text x="374" y="209" font-size="12.5" font-weight="400" fill="#57606A">loop thread, no clock</text>
+
+  <rect x="696" y="168" width="240" height="56" rx="8" fill="#F6F8FA" stroke="#8C959F" stroke-width="1"/>
+  <text x="710" y="190" font-size="15" font-weight="600" fill="#1F2328">Tool registry</text>
+  <text x="710" y="209" font-size="12.5" font-weight="400" fill="#57606A">three tools, in code</text>
+
+  <!-- Row 3 -->
+  <rect x="360" y="288" width="240" height="56" rx="8" fill="#F6F8FA" stroke="#8C959F" stroke-width="1"/>
+  <text x="374" y="310" font-size="15" font-weight="600" fill="#1F2328">Summarizer</text>
+  <text x="374" y="329" font-size="12.5" font-weight="400" fill="#57606A">relay last output</text>
+
+  <!-- Arrows -->
+  <g stroke="#57606A" stroke-width="1.5" fill="none" marker-end="url(#arrow)">
+    <path d="M264 76 H360"/>
+    <path d="M600 76 H696"/>
+    <path d="M480 104 V168"/>
+    <path d="M600 196 H696"/>
+    <path d="M396 104 V136 H144 V168"/>
+    <path d="M480 224 V288"/>
+  </g>
+
+  <!-- Issue badges -->
+  <g font-size="12" font-weight="600" fill="#FFFFFF" text-anchor="middle">
+    <circle cx="936" cy="48" r="11" fill="#CF222E"/>
+    <text x="936" y="52.3">1</text>
+    <circle cx="600" cy="168" r="11" fill="#CF222E"/>
+    <text x="600" y="172.3">2</text>
+    <circle cx="600" cy="48" r="11" fill="#CF222E"/>
+    <text x="600" y="52.3">3</text>
+    <circle cx="264" cy="168" r="11" fill="#CF222E"/>
+    <text x="264" y="172.3">4</text>
+    <circle cx="600" cy="224" r="11" fill="#CF222E"/>
+    <text x="600" y="228.3">5</text>
+    <circle cx="264" cy="48" r="11" fill="#CF222E"/>
+    <text x="264" y="52.3">6</text>
+  </g>
+
+  <!-- Absent in v1 -->
+  <rect x="24" y="380" width="912" height="44" rx="8" fill="#F6F8FA" stroke="#8C959F" stroke-width="1"/>
+  <text x="38" y="407" font-size="15" font-weight="600" fill="#1F2328">Absent in v1</text>
+  <g font-size="12" font-weight="600" fill="#FFFFFF" text-anchor="middle">
+    <circle cx="200" cy="402" r="11" fill="#CF222E"/>
+    <text x="200" y="406.3">7</text>
+    <circle cx="390" cy="402" r="11" fill="#CF222E"/>
+    <text x="390" y="406.3">8</text>
+    <circle cx="580" cy="402" r="11" fill="#CF222E"/>
+    <text x="580" y="406.3">9</text>
+    <circle cx="770" cy="402" r="11" fill="#CF222E"/>
+    <text x="770" y="406.3">10</text>
+  </g>
+  <g font-size="12.5" font-weight="400" fill="#1F2328">
+    <text x="219" y="406.5">measurement</text>
+    <text x="409" y="406.5">context management</text>
+    <text x="599" y="406.5">model router</text>
+    <text x="789" y="406.5">sub-agents</text>
+  </g>
+
+  <!-- Legend -->
+  <circle cx="31" cy="452" r="5" fill="#CF222E"/>
+  <text x="44" y="456.5" font-size="12.5" font-weight="400" fill="#57606A">red = an issue in v1</text>
+</svg>
