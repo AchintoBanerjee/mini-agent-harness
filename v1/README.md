@@ -1,10 +1,10 @@
 # Mini Agent Harness
 
-Scrap repo from the interview challenge on 2026-10-14. New here? Read `HANDOFF.md` first, then `PROBLEM.md`.
+The harness exactly as designed and built in the live round on 2026-10-14, frozen at tag `v1`. The brief is [PROBLEM.md](../PROBLEM.md); what v2 changed, and why, is [DESIGN.md](../DESIGN.md).
 
 ## Design
 
-![design](design.png)
+![the whiteboard from the live round](../docs/v1-whiteboard.png)
 
 **Goal:** `run(question) -> answer`. A rule-based stub model picks one tool, the harness runs it, and the answer comes back.
 
@@ -46,8 +46,6 @@ Code is in `src/main/java/harness`. `SampleTools` holds the three tools and thei
 
 ## Repo map
 
-- `PROBLEM.md`: the challenge brief, verbatim
-- `HANDOFF.md`: state, known issues, follow-ups and what comes next
-- `chat/transcript.md`: the whole chat with the coding assistant
-- `design.png`: the whiteboard picture behind the design above
-- `WORKING-RULES.md`: the working rules the session followed (`AGENTS.md` is a symlink to the same file outside this repo)
+- `src/main/java/harness`: the code, as built in the hour. `SampleTools` holds the three tools and their hard-coded data; `Main` is the demo driver.
+- `../docs/v1-whiteboard.png`: the whiteboard picture behind the design above.
+- `../v2/`: the harness extended into a small service; its manual is `../v2/README.md`.
