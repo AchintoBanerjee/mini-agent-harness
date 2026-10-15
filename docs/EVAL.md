@@ -1,6 +1,6 @@
 # Measuring the harness
 
-[The issue](#the-issue) · [The design](#the-design) · [The choices](#the-choices) · [What I ran](#what-i-ran-on-my-platform-in-production) · [The implementation](#the-implementation) · [Proof](#proof) · [What v2 implements](#what-v2-implements)
+[The issue](#the-issue) · [The design](#the-design) · [The choices](#the-choices) · [What I ran](#what-i-ran-on-my-platform-in-production) · [The implementation](#the-implementation) · [Proof](#proof) · [Live, at scale](#live-at-scale-where-the-rows-go-and-who-judges) · [What v2 implements](#what-v2-implements)
 
 An agent can be up, fast, error-free, and completely wrong. Measuring a harness means two questions, asked separately and never blended into one score: did the loop do its job, and was the answer right. Every output below is from a real run of `./demo.sh`; the committed `demo-output.txt` is a later run, so ids and timings differ, nothing else.
 
@@ -112,6 +112,34 @@ harness: tool_choice 11/13 · stopped_by_done 13/13 · errors_surfaced 13/13 · 
 ```
 The two failures are the stub's known limits, left in so the table has something to say: "reorder" matches the order tool's keyword and runs it, "parcel" matches nothing. Both fail on `tool_choice` first, the harness column, before the answer column says anything; that is the point of the expected trace. Cases 1 and 13 are the chain: two tools, three passes, and the answer with both lines.
 </details>
+
+## Live, at scale: where the rows go and who judges
+
+The before-ship loop reads a few rows. The live loop reads every step of every agent, across every tenant, and at scale that is a different problem.
+
+- **One store cannot be both.** The step row is on the request path: the next turn's context is built from it, resume reads it, the UI renders it, audit and replay need the full text. Point reads by id, per tenant, transactional. The fleet question is the opposite shape: scan billions of skinny rows across every tenant, group by anything, append-only. One logical model, two physical shapes, joined by the same ids.
+- **The span rows.** One wide, append-only table, one row per step, every dimension repeated on every row: tenant, agent, version, model, pod, tokens, cost, latency, status, and the text as a pointer by default. Any fleet question is one GROUP BY, then one click into the exact turn. Scores sit beside the rows, keyed by the turn id and the judge version. A column store such as ClickHouse, or LangSmith on top of one.
+- **Three screens, three jobs.** Prometheus pages me; the span rows tell me who and where; the tenant row shows me why. Alerts need pre-aggregated series with few labels. The rows take any cardinality and decide the question at query time. ClickHouse computes, Prometheus pages.
+- **The writer.** The loop writes each step once. A collector takes the span out of the process, strips identifiers, and fans the same span out to the trace store and to the metrics page. Nothing in the orchestrator knows which vendor is behind it; switching one product for another is a change in the collector's export list, not in the loop.
+- **Telemetry travels, content stays.** Ids, dimensions and numbers go everywhere. The words stay in the tenant's store and are fetched by id, with authorization, when a human or the judge needs them. A redacted copy goes to the trace store only when the tenant opts in, in its region, with a retention limit. Never to a vendor's cloud for an enterprise tenant unless the contract says so.
+- **The judge runs inside that boundary.** It reads the tenant row by id, or the redacted copy, and writes back only a score.
+
+| Option | How it works | What you get | What it costs |
+|---|---|---|---|
+| the state database as the trace store | the rows the loop already writes, queried in place | nothing to add | analytics on the request path; no column to group by; every fleet question becomes a new metric and a deploy |
+| a column store you run, such as ClickHouse | the collector fans the spans into your own table | any question at query time, inside your boundary; the judge's input | a store to run; the schema is yours to keep |
+| a managed product on top of one, such as LangSmith or Langfuse | fed over the collector's exporter; no vendor SDK in the loop | the screens, online evaluators, datasets and annotation queues come with it | the text may only go where the contract allows: a vendor's cloud for some tenants, self-hosted in the tenant's region for the rest |
+
+I pick the column store beside the state database from day one, fed by the collector, and a managed product on top of it where the contract lets the text out. The judge runs inside the boundary where it does not. The loop never knows which.
+
+**What I ran, on my platform in production**
+
+- Every step was appended as a row per tenant, full payload, tokens in columns, and the next turn's context was built from those rows. That gave replay, audit and recorded golden sets. It was built for debugging one conversation, not for fleet questions.
+- The rows had no parent id, no pod or model column, no cost column. The judge's scores went to a metrics system per agent template, with no per-agent baseline and no drill-down. The numbers lived in three places and nothing joined.
+- "The GPU went up, who?" was hours of digging through logs, because nothing had a column to group by. With the span rows it is one GROUP BY and a click. Observability does not stop the batch that burns the GPU; the governor on the scaling page does. It shortens "who" from hours to minutes.
+- Persisting everything was right. What I would do from day one: one trace id minted at the turn and carried across the async hop, one dimension set on every row, metric, log line and score. A skinny multi-tenant span store beside the tenant database was cheap then; it is a migration now.
+
+None of this is in v2. The seam is the row the loop already writes: the listener that gets every step is where a span exporter hangs.
 
 ## What v2 implements
 
