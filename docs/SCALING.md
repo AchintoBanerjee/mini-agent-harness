@@ -35,7 +35,7 @@ I pick the Redis Stream: my platform already runs a Redis cluster, and the buffe
 
 - The first shape streamed the turn on the same request that started it: one pod ran the whole loop inside that request's timeout.
 - A mid-turn drop lost the in-flight events; what was persisted at the end was kept.
-- I wrote the next shape up as a thin API layer subscribing by run id. The Stream with replay from the last id is the designed fix, not shipped.
+- The next shape shipped with the queue: a thin API layer subscribing by run id over Redis pub/sub, which carries the stream to whichever pod holds the connection but has no buffer, so a client away for a second missed what was published. The Stream with replay from the last id is the designed fix, not shipped.
 
 ## Scaling the GPU, the one thing that does not autoscale
 
@@ -46,11 +46,11 @@ The GPU does not autoscale. It is a fixed number of cards shared by every tenant
 - **The problem.** Open the GPU to everyone and one busy tenant slows the model for all of them; a slow model is a slow platform. Close it and you pay for an idle GPU while customers wait for their batch. On my platform, in production, we hit both: let it in and it slowed everyone's live chat, keep it out and the GPU sat idle while customers waited.
 - **The catch.** The decision needs the GPU's utilization, and no number you can fetch is good enough. The cloud provider's gauge is a reporting metric, minutes late behind a rate-limited API, and often not there at all. The serving engine's own utilization depends on the KV-cache memory as much as on the compute. A number computed from what you sent is the one you can gate on.
 - **The meter.** Every model call goes through one wrapper in front of the GPU, and the wrapper does the measurement and the math: calls, input tokens, output tokens, per window. The number exists for every call; nothing is fetched.
-- **The formula.** Load is calls plus input tokens plus output tokens, each against the saturated row: what the GPU processed per minute in real saturated minutes. Weighted 0.1 for calls, 0.2 for input, 0.7 for output, so the number reads exactly 100 at saturation. Generating is the cooking; reading the input is cheap. Those weights are the default. The row and the weights come from a saturation test: push load until the time to first token starts to climb, and take that minute as 100. Keyed by GPU type and model family, so it transfers to every cluster of that shape. Uncalibrated means observe only, never guessed.
+- **The formula.** Load is calls plus input tokens plus output tokens, each against the saturated row: what the GPU processed per minute in real saturated minutes. Weighted 0.1 for calls, 0.2 for input, 0.7 for output, so the number reads exactly 100 at saturation. Generating is the cooking; reading the input is cheap. Those weights are the defaults. The saturation test sets the row, and can re-set the weights, per GPU type and model family: push load until the time to first token starts to climb, and take that minute as 100. Keyed by GPU type and model family, so it transfers to every cluster of that shape. Uncalibrated means observe only, never guessed.
 - **The decision.** Admit when the window's number plus the estimated cost of what you are admitting stays under the threshold. Every decision stores the number, the threshold and the allowance it saw, so a deny at three in the morning is explained at nine by reading, not by reproducing.
 - **After.** Compare the meter's number with the provider's gauge once a day. A late number is useless for the gate and perfect for the calibration.
 - **Gate one, the fair share.** Every tenant gets a share of the GPU; within the share a live call is always admitted.
-- **Gate two, the room.** A tenant that is not using its share leaves room. That capacity is not set aside anywhere; it is simply wasted. So a call over its tenant's share is admitted too, but only while the room is substantial: the meter's number has to be under the threshold.
+- **Gate two, the room.** A tenant that is not using its share leaves room. That capacity is not set aside anywhere; it is simply wasted. So a call over its tenant's share can be admitted too, but only while the room is substantial: the meter's number under the threshold. For batch this runs; for live it is designed on the same number, below.
 - **Why the threshold.** It is the margin: a tenant coming back for its own share must never queue behind someone else's burst.
 - **Batch.** A batch run goes through gate two only: admitted a whole run at a time, and only into the room. Once admitted it runs to the end. The brake is the wait between calls; a run is never paused mid-flight. On my platform this is what runs.
 - **The threshold is configurable per cluster, and we run it conservative,** because the cost of a run is an estimate and the meter is a window behind.
@@ -75,13 +75,13 @@ I pick the meter and the shared service, because a pod only ever sees its own sl
 - Live got a fair share per tenant on that number.
 - Batch got a queue, admitted into headroom under a threshold we run conservative, a run at a time, never cancelled. I wanted to pause runs mid-flight; the team said too invasive, and they were right.
 - The second gate for live, over the share into the room, is designed on the same number and not built.
-- My part: the direction, the business case, and the admission side: the queue, the worker, the advisor and the runbooks.
+- My part: the direction, the business case, and the admission side: the batch queue, the worker that admits a run, the advisor that answers admit or wait from the meter's number, and the runbooks.
 
 ## Scaling the tools and the state
 
 - **Tools.** On my platform, in production, one question was several tool calls and an authorization check for each of them, so the downstreams saw ten to fifty times the traffic the same work made through the UI. They were sized for a human clicking, not an agent looping. v2 has the timeout on every tool call ([a clock on every tool call](V2_FEATURES.md#a-clock-on-every-tool-call)). The pooled client, the per-tool limit and the circuit breaker on the hottest path are the design, not built here.
 - **State.** The step row is the ledger. Telemetry is written after it, off the request path, never as one fat synchronous write per step; in v2 this is design, not built. On my platform, in production, we learned this the hard way. We had no telemetry store, so the observability writes went into the same relational store as the state, synchronous in the loop: tens of rows and about a hundred kilobytes per conversation, and write latency became conversation latency. The right answer is a stream into a column store, separate from the state store from day one.
-- **Tenancy.** Design, nothing in v2: the tenant id rides on the turn and on every call. On my platform, where the tenant owns the infrastructure, isolation is routing. At the one shared step, the GPU, isolation is admission: that is the governor above.
+- **Tenancy.** Design, nothing in v2: the tenant id rides on the turn and on every call. On my platform each tenant runs on its own stack, so isolation is which stack a request is routed to. At the one shared step, the GPU, isolation is admission: that is the governor above.
 
 ## What v2 implements
 

@@ -32,7 +32,7 @@
 
 <rect class="o" x="200" y="170" width="900" height="254"/>
 <text class="h" x="215" y="190">Orchestrator</text>
-<text class="m" x="310" y="190">the loop dispatches every returned tool call by name: search_tools → the handler below · any other name → the tool client</text>
+<text class="m" x="310" y="190">the loop dispatches every returned tool call by name: search_tools → the handler below · any other name → the tool caller</text>
 
 <rect class="o" x="215" y="200" width="870" height="92"/>
 <text class="h" x="225" y="216">search_tools handler</text>
@@ -82,7 +82,7 @@
 <line class="l" x1="980" y1="286" x2="980" y2="304"/>
 
 <rect class="b" x="215" y="380" width="870" height="34"/>
-<text class="h" x="225" y="401">Tool client</text>
+<text class="h" x="225" y="401">Tool caller</text>
 <text class="m" x="310" y="401">⑤ a name that is not search_tools → tools/call as the user, exactly as today → ⑥</text>
 
 <line class="l" x1="420" y1="468" x2="420" y2="426"/><text class="m" x="432" y="451">⓪ tools/list, once at registration → catalog + index</text>

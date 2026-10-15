@@ -20,10 +20,10 @@
 - **The split.** The HLD page, `V2_HLD.md`, drew the HTTP face and the loop as one service. Here they become two processes with a queue between them: the API process takes the request, a worker process runs the turn. Two reasons. A turn has to outlive the request that created it. And the two scale on different signals: requests on one side, queue depth on the other.
 - **End users → API layer**: the question comes in; the API writes the turn row (`QUEUED`) and a message on the queue in one transaction, and returns the turn's id, the job id, at once. No loop runs in this process.
 - **Run queue**: the message is the turn. `receive` hides it for the visibility window, and that window is the lease: whoever holds it is the only worker on the turn.
-- **Workers**: a worker receives, claims the turn row (`RUNNING`, its process id, attempts + 1) and runs the loop; each step is written to the store before the next one, and each written step extends the lease.
+- **Workers**: a worker receives, claims the turn row (`RUNNING`, its process id, attempts + 1) and runs the loop; each step is written to the store before the next one, and each written step extends the lease. The window has to outlast the longest step, the model call plus the tool timeout, or a heartbeat extends it on a timer; the demo's 2 s window beside a 2 s tool timeout is a demo setting, not the rule.
 - **Ack**: only after the last step is saved and the turn row says `DONE` with the answer does the worker delete the message.
 - **Dead worker**: no ack, the lease runs out, the message is visible again; the next worker receives it, finds the saved steps, and resumes from the last one, so the model is asked only for what comes next.
-- **DLQ** (dead-letter queue): after N receives the message goes to a dead-letter queue instead of looping forever.
+- **DLQ** (dead-letter queue), design only: after N receives the message goes to a dead-letter queue instead of looping forever.
 - **The stream back to the client**: the worker pushes each step and each piece of the answer to the run's stream as they happen. The API node holding the client's connection forwards the stream as Server-Sent Events (SSE), so it does not care which worker is on the turn. If the stream is gone, the API sends the saved rows instead, once.
 - **The call in flight**: a worker that dies after a tool did its work and before the row landed leaves one call that runs twice. Every call carries a key, and a tool that writes ignores the repeat. In v2 the key is the job id plus the step of the model call that asked for the tool, so two calls from one batch share one key. Production needs one more part in the key: the call's position in the batch.
 
@@ -67,7 +67,7 @@ The queue is what I ran: the simplest thing that worked at that scale, and the l
 ## What I ran
 
 - The first version checkpointed the run only at wait points: an approval, a timer, a long call. Between them the run lived in memory, and a crash between them lost it.
-- The next version put an SQS-style queue with a visibility timeout in front of the loop: the worker extends it while the run is live, acks only after the step is persisted, a dead worker's message becomes visible again and another pod picks it up, repeated failures go to the DLQ. The scaling lever became queue depth, not request count.
+- The next version put an SQS-style queue with a visibility timeout in front of the loop: the worker extends it while the run is live, acks only after the last step is persisted, a dead worker's message becomes visible again and another pod picks it up, repeated failures go to the DLQ. The scaling lever became queue depth, not request count.
 - Resume is an opt-in log of completed tool calls per conversation: the new pod rebuilds the context from it and the model continues.
 - The contract: completed tool calls run once, the one in-flight call at least once, so tool writes are idempotent by key. If that is ever not enough, the fix is a started-marker before the call and a check on resume.
 - With hindsight durability was the real hard problem; the Temporal pick is in The choices above.

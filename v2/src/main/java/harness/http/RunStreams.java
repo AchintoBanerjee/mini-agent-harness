@@ -7,7 +7,7 @@ import java.util.Map;
 
 /**
  * The run's stream, held in this process: entries with ids per turn, read from the last id a
- * client saw. In production this is a Redis Stream per job id, so any API node can read it;
+ * client saw. At scale this is a Redis Stream per job id, so any API node can read it;
  * here it is a map in this process. The worker, another process, pushes into it over HTTP.
  * The done entry ends a stream: nothing appended after it is kept. A finished stream stays
  * for TTL_MS so a late or reconnecting client can still read it, and is dropped on the next

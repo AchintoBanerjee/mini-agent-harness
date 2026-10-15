@@ -346,8 +346,10 @@ answer: Order ORD-1: SHIPPED, shipment SHP-1
 done r-a562 · 3 spans · 20 ms · DONE in harness.db · acked · handler calls: order_status=1, shipping_status=1
 ```
 
-`order_status=1` in the footer after the third turn: one real order lookup for the two
-questions; the `shipping_status=1` next to it is the first turn's chained call. A tool that
+`handler calls` counts the real handler runs in this worker process since it started, across
+turns; that is why the chaos turn's footer still shows the first turn's two lookups, and it is
+what makes a dedupe or a resume provable. `order_status=1` after the third turn: one real order
+lookup for the two questions; the `shipping_status=1` next to it is the first turn's chained call. A tool that
 throws gets `ERROR` the same way the hang got `TIMEOUT`, and a tool the agent does not list
 gets `DENIED` without running.
 

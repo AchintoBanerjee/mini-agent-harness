@@ -2,7 +2,7 @@
 
 A small agent harness in plain Java 21: a loop that hands the state to a model, runs the tool the model asks for, feeds the result back, and stops when the model says it is done. The model is a stub; there is no network and no key. Built for the brief in [PROBLEM.md](PROBLEM.md).
 
-I built an agent platform that thousands of customers use in production, and ran it for several years. Everything on these pages is that experience, the platform I built and what it taught me, applied to a small harness.
+I built an agent platform that thousands of customers use in production, and have run it since it went live. Everything on these pages is that experience, the platform I built and what it taught me, applied to a small harness.
 
 - `v1/` is the harness exactly as designed and built in the live round (git tag `v1`). It is frozen.
 - `v2/` extends it into a small service. HTTP is the face. Each question is a turn, run as a job, and its answer streams back. A queue with a lease lets the next worker resume a dead worker's turn. It also adds an agent as a tool, parallel and chained tool calls, dedupe, and a golden set that scores the harness itself.
@@ -24,7 +24,7 @@ What you need:
 ./demo.sh
 ```
 
-About a minute for the first build, under a minute for the demo. The tests are separate: `cd v2 && mvn -q test`, about ten seconds.
+About a minute for the first build, under a minute for the demo. The tests are separate: `cd v2 && mvn test`, about ten seconds; it ends with `Tests run: 126, Failures: 0`. The lines before that, `crash: exit 3` among them, are the tests' own worker logs: the simulated crash is one of the tests. On JDK 24 or newer Maven prints a few native-access warnings of its own; they are harmless.
 
 `demo.sh` compiles v2 and runs every command of the manual, [v2/README.md](v2/README.md), in order:
 

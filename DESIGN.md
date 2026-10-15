@@ -1,6 +1,6 @@
 # Mini agent harness: the design
 
-I built an agent platform that thousands of customers use in production, and ran it for several years. Everything on these pages is that experience, the platform I built and what it taught me, applied to a small harness.
+I built an agent platform that thousands of customers use in production, and have run it since it went live. Everything on these pages is that experience, the platform I built and what it taught me, applied to a small harness.
 
 One page that ties the pages together, in the order they were built: what was built live, what v2 adds, then the deep dives. Read this for the story, each page for the depth, `./demo.sh` for the proof (`docs/demo-output.txt` is its saved output). The brief is [PROBLEM.md](PROBLEM.md).
 
@@ -10,7 +10,7 @@ One page that ties the pages together, in the order they were built: what was bu
 
 ![the whiteboard from the live round](docs/v1-whiteboard.png)
 
-- The brief: `run(goal)`, a loop that hands the state to a model, runs the tool it asks for, feeds the result back, stops when the model says done; a stub model, no network. Then six follow-ups: durable runs, sub-agents, parallel tool calls, measuring the harness, routing across providers, sandboxing.
+- The brief: `run(goal)`, a loop that hands the state to a model, runs the tool it asks for, feeds the result back, stops when the model says done; a stub model, no network. Then six follow-ups: durable runs, sub-agents, parallel tool calls, measuring the harness, routing across providers, sandboxing. Four of the six have a page below. Routing across providers and sandboxing do not: the LLM proxy and the tool caller are the seams they plug into, and I chose depth on four over breadth on six.
 - What I drew and built in the hour: Orchestrator owns the loop; LLMProxy is the stub; ToolCaller and ToolRegistry run and hold the tools; Conversation, Turn, Span and Context are the state; a Summarizer relays the answer. One process, one question, one tool, done.
 - What it could not do, and the follow-ups were about: a turn died with the process; nothing streamed; one tool at a time; no agent inside an agent; no way to say whether the loop did its job; the answer was the last tool's output.
 - `v1/` is that code, frozen at tag `v1`, with its own [README](v1/README.md).
@@ -25,7 +25,7 @@ Page: [docs/V2_HLD.md](docs/V2_HLD.md)
 - The loop's two seams are drawn as v1 drew them. Behind the LLM proxy sits the rule stub in this POC and a model on a GPU behind a gateway in production. Behind the tools sit lookups here and REST and MCP calls as the user in production.
 - A question that needs several tool calls runs them one after the other when the second needs the first's result, and together when it does not; the model decides which from what it has read.
 
-How to run it, the endpoints, the three tables and the proof under each claim are on [the HLD page](docs/V2_HLD.md).
+How to run it, the endpoints, the four tables and the proof under each claim are on [the HLD page](docs/V2_HLD.md).
 
 ## 3 · v2: additional features
 
@@ -40,7 +40,7 @@ Page: [docs/DURABILITY.md](docs/DURABILITY.md)
 - The split: the HTTP face and the loop become two processes with a queue between them, so a turn outlives the request that created it. A turn is a message; the visibility timeout is the lease; the worker extends it on every saved step and acks last.
 - A dead worker's message comes back by itself; the next worker loads the saved rows and continues, mid-chain, without asking the model again for a decision it has.
 - The contract: a saved step runs once; the one call in flight at the crash runs at least once; so a tool that writes is idempotent on the key the harness gives it.
-- Temporal, a workflow engine, is the step up from the queue: the same contract, with the bookkeeping done for you. I never evaluated it, and what is scoped here has the shape it would have on Temporal.
+- Temporal, a workflow engine, is the step up from the queue: the same contract, with the bookkeeping done for you. I never evaluated it. What is scoped here keeps the same contract, so it would carry over.
 - What the POC runs: one build, two processes on one laptop, one SQLite file, the queue table standing in for SQS. Not containers.
 
 ## 5 · Scaling
@@ -50,7 +50,7 @@ Page: [docs/SCALING.md](docs/SCALING.md)
 - The pods scale on load and on queue depth; nothing new there.
 - The persistent connection: once the queue splits the API from the worker, the client's connection is on one pod and the turn runs on another. The loop produces the run's stream. A Redis Stream per job id carries it to whichever API pod holds the connection, with replay from the last id; when the stream is gone, the client reads the store instead.
 - v2 has the same shape on one machine: the worker pushes every event to the API over HTTP, and the API holds the stream in memory as the stand-in for the Redis Stream.
-- The GPU is the one thing that does not autoscale, so a governor sits in front of the shared model. On my platform I built three parts of it. The meter: saturation computed from calls and tokens, because the provider's own number comes too late. The fair share: each tenant gets a share of the GPU for its live calls. The batch queue: a batch run is admitted only into the room, the capacity that tenants are not using.
+- The GPU is the one thing that does not autoscale, so a governor sits in front of the shared model. On my platform we built three parts of it; my part was the direction, the business case and the batch admission side. The meter: saturation computed from calls and tokens, because the provider's own number comes too late. The fair share: each tenant gets a share of the GPU for its live calls. The batch queue: a batch run is admitted only into the room, the capacity that tenants are not using.
 - The fourth part is design, not built: admitting a live call over its tenant's share into that same room, on the same saturation number. None of this is in v2, where the model is a stub.
 - Tools and state: timeouts and limits on the downstream services the tools call; telemetry written to its own store, not into the state store. v2 has the timeout on every tool call; the limits and the separate telemetry store are design.
 
@@ -66,7 +66,7 @@ Page: [docs/PERFORMANCE.md](docs/PERFORMANCE.md)
 
 Page: [docs/SUBAGENTS.md](docs/SUBAGENTS.md)
 
-- Three patterns I have run at scale.
+- Three patterns I have run at scale, one of them only as far as pre-production.
 - Group chat, or a supervisor: every agent sees the whole transcript, and the calls double.
 - Agent as a tool, built in v2: the child sees the goal and its own tools; the parent gets the answer.
 - The DAG, for a sequence known up front: best on a workflow engine; design here, not built.
@@ -81,7 +81,7 @@ Page: [docs/EVAL.md](docs/EVAL.md)
 
 ## 9 · The picture at the end
 
-Three diagrams, in the order the pages added them, are the harness at scale: [the split and the queue](docs/durability.svg), [the stream across pods](docs/scaling-stream.svg), [the governor in front of the GPU](docs/scaling-gpu.svg). Everything built in v2 keeps its seam in that picture: the API layer, the loop in the worker, the run's stream, the store, the model interface, the tool registry.
+Three diagrams, in the order the pages added them, are the harness at scale: [the split and the queue](docs/durability.svg), [the stream across pods](docs/scaling-stream.svg), [the governor in front of the GPU](docs/scaling-gpu.svg). Everything built in v2 keeps its seam in that picture: the API layer, the loop in the worker, the run's stream, the store, the LLM proxy, the tool registry.
 
 ## 10 · What I would build next, in order
 

@@ -61,7 +61,7 @@ echo '$ rm -f harness.db harness.db-wal harness.db-shm      (the demo starts fro
 rm -f harness.db harness.db-wal harness.db-shm
 
 header "the HTTP face: serve, and one worker, in the background"
-server_log=$(mktemp -t harness-serve)
+server_log=$(mktemp "${TMPDIR:-/tmp}/harness-serve.XXXXXX")
 show serve --port 0
 $JAVA -cp "$CP" harness.cli.Main serve --port 0 > "$server_log" 2>&1 &
 server_pid=$!
@@ -70,7 +70,7 @@ base=$(sed -n 's/^listening on \(http:[^ ]*\).*/\1/p' "$server_log")
 if [ -z "$base" ]; then echo "the server did not start:"; cat "$server_log"; exit 1; fi
 grep '^listening on' "$server_log"
 echo "(the server stays in the background; --port 0 picked a free port, the manual uses 8080)"
-worker_log=$(mktemp -t harness-worker)
+worker_log=$(mktemp "${TMPDIR:-/tmp}/harness-worker.XXXXXX")
 show worker --api "$base"
 $JAVA -cp "$CP" harness.cli.Main worker --api "$base" > "$worker_log" 2>&1 &
 worker_pid=$!
@@ -127,7 +127,7 @@ ticket=$(curl_show -s -X POST "$base/runs" -d '{"agent":"support","question":"St
 printf '%s\n' "$ticket"
 parallel_id=$(turn_id_of "$ticket")
 if [ -z "$parallel_id" ]; then echo "no turn id in the POST reply"; exit 1; fi
-stream_out=$(mktemp -t harness-stream)
+stream_out=$(mktemp "${TMPDIR:-/tmp}/harness-stream.XXXXXX")
 echo "\$ curl -sN --max-time 8 $base/turns/$parallel_id/events > stream.txt &      (opened before the worker starts; what it received is printed after the worker ends)"
 curl -sN --max-time 8 "$base/turns/$parallel_id/events" > "$stream_out" &
 stream_pid=$!

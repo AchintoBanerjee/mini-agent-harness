@@ -44,12 +44,12 @@ I pick the expected trace, the sampled judge and named rates. I designed a blend
 
 ## What I ran, on my platform in production
 
-- Before ship: the teams that own the agents recorded golden sets from real sessions, the expected tool calls stored next to the expected answer, and we replayed them as a gate before a change went out.
+- Before ship: the teams that own the agents recorded golden sets from real sessions, the expected tool calls stored next to the expected answer, and we replayed them before a change went out, on the answer only: the tool-choice check in the bullet below never shipped.
 - Live: a scheduled judge scored a sample of real turns per agent and published the trend per agent version. When a model switch broke agents in subtle ways, the trend broke, and we had it in days instead of weeks of anecdotes.
-- We took the important decisions on those numbers. Critical features and model changes shipped with confidence because the golden sets and the live judge said quality held; without them every change would have been a guess and an argument. The context fix on the performance page shipped that way: the tenants' golden sets flat, the cost down.
+- We took the important decisions on those numbers. Critical features and model changes shipped with confidence because the golden sets and the live judge said quality held; without them every change would have been a guess and an argument. The context fixes on the performance page shipped that way: the tenants' golden sets flat, the cost down.
 - It caught the big ones early, and they were about cost and time as much as correctness. The multi-agent pattern we started with burned far more tokens than anyone expected, up to twice the model calls per hop; the numbers showed it one release in, and that is what let me stop it. The same numbers put the context growth on a chart before customers did.
-- What was missing: the check that compares the tools called with the tools expected never shipped, and tool errors were never counted. Both are plain code over rows we already had: the cheapest checks, and the ones missing.
-- The finding that made all of this real I reached by hand. I plotted prompt tokens per turn from the rows and saw a conversation at about 175k tokens by turn sixteen, most of it ten copies of one tool result. The fix cut tokens by about eighty percent with the golden sets flat. That is the check I would automate first.
+- What was missing: the expected tool calls were recorded, but the check that compares them with the tools called never shipped, and tool errors were never counted. Both are plain code over rows we already had: the cheapest checks, and the ones missing.
+- The finding that made all of this real I reached by hand. I plotted prompt tokens per turn from the rows and saw a conversation at about 175k tokens by turn sixteen, most of it ten copies of one tool result. The context fixes that followed cut the token cost by about eighty percent and the context to about a tenth, with the golden sets flat. That is the check I would automate first.
 
 ## The implementation
 
@@ -115,7 +115,7 @@ public static CaseResult score(GoldenCase golden, List<Span> rows, String answer
 13  PASS  support    Where is my order ORD-3?                                ran order_status,shipping_status  3 passes      0 ms
 harness: tool_choice 11/13 · stopped_by_done 13/13 · errors_surfaced 13/13 · p50 0 ms | agent: answer 11/13
 ```
-The two failures are the stub's known limits, left in so the table has something to say: "reorder" matches the order tool's keyword and runs it, "parcel" matches nothing. Both fail on `tool_choice` first, the harness column, before the answer column says anything; that is the point of the expected trace. Cases 1 and 13 are the chain: two tools, three passes, and the answer with both lines.
+The two failures are the stub's known limits, left in so the table has something to say: "reorder" contains the order tool's keyword and runs it; "track my parcel" contains none of the shipping tool's keywords, "tracking" among them. Both fail on `tool_choice` first, the harness column, before the answer column says anything; that is the point of the expected trace. Cases 1 and 13 are the chain: two tools, three passes, and the answer with both lines.
 </details>
 
 ## Live, at scale: where the rows go and who judges

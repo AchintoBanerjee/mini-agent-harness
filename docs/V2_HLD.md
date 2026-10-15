@@ -11,8 +11,8 @@ The harness as a small service: you call it over HTTP, its state lives in one SQ
 - **End users** ask a question and get a job id back at once; the answer follows as a stream.
 - **API layer** is the one face: `POST /runs` writes the turn row and returns its id; `GET /turns/{id}` reads it; `GET /turns/{id}/events` streams it.
 - **Orchestrator** is the loop: build the context, call the model, run the tool it asks for, repeat until the model says done or the agent's pass cap hits. Every step is written to the store before the next one is taken. The loop already does more than that: parallel tool calls, a clock on every tool call, the agent's tool list as the gate, the pass cap and the budget, and the answer. Each is on the next page, [v2: additional features](V2_FEATURES.md), with a run.
-- **One service, two layers.** The diagram draws the HTTP face and the loop as one service. In v2 they already run as two processes, `serve` and `worker`, so a turn outlives the request that created it; the Try it section runs both. Why they are split is on [the durability page](DURABILITY.md).
-- **LLM proxy** is the single entry point to the model, the same box v1 drew: the loop hands it the context and gets back a tool to call with its input, or done. Two implementations sit behind it. In this POC, the rule-based stub: keywords on the question in the first pass, then the ids the results name. In production, the gateway: it picks the model, routes by tenant and tier, and shares the GPU, which is the governor on the scaling page. The loop never knows which one answered.
+- **One service in the picture, two processes in v2.** The diagram draws the HTTP face and the loop as one service. In v2 they already run as two processes, `serve` and `worker`, so a turn outlives the request that created it; the Try it section runs both. Why they are split is on [the durability page](DURABILITY.md).
+- **LLM proxy** is the single entry point to the model, the same box v1 drew: the loop hands it the context and gets back a tool to call with its input, or done. Two implementations sit behind it. In this POC, the rule-based stub: keywords on the question in the first pass, then the ids the results name. In production, the model gateway: it picks the model, routes by tenant and tier, and holds the governor that shares the GPU, on the scaling page. The loop never knows which one answered.
 - **Tool caller, tool registry, tools**, as v1 drew them: the caller runs what the model names, under the agent's tool list and clock; the registry holds the tools from `tools/`, where the file's type picks the adapter; the tools are the adapters. In this POC they are lookups over data in the tool file; in production a tool gateway sits behind the same seam, making REST and MCP calls as the user. Tool discovery at hundreds of tools is on the performance page.
 - **Run store** is SQLite here and the tenant database at scale, same tables.
 - **The dashed arrow** is the run's stream: the loop pushes each step and each piece of the answer as it happens, the API holding the connection forwards it to the client. The store is read only if the stream is gone.
@@ -57,7 +57,7 @@ Product PRD-1: 42 units in stock
 
 ## The data model
 
-Three tables, from the whiteboard: a conversation has turns, a turn is one job, a turn has spans.
+Three tables from the whiteboard, a conversation has turns, a turn is one job, a turn has spans, and a fourth for the queue.
 
 | Table | Columns |
 |---|---|
@@ -80,6 +80,8 @@ CREATE TABLE IF NOT EXISTS turn (
 CREATE TABLE IF NOT EXISTS span (
   turn_id TEXT, span INTEGER, pass INTEGER, kind TEXT, request TEXT, response TEXT,
   status TEXT, ms INTEGER, attrs TEXT, PRIMARY KEY (turn_id, span));
+CREATE TABLE IF NOT EXISTS queue (
+  turn_id TEXT PRIMARY KEY, visible_at INTEGER, receives INTEGER);
 ```
 </details>
 
@@ -96,7 +98,7 @@ CREATE TABLE IF NOT EXISTS span (
 | POST | `/turns/{id}/events` | the worker's push: body `{"event","data"}`, appended to the run's stream; the stand-in for the Redis Stream append | `204`; `404` |
 | POST | `/evals` | the golden set, scored in the server | `200`, the table as `cases` and `lines` |
 
-The server is the JDK's own HTTP server, one virtual thread per request, JSON by hand. No framework.
+The server is the JDK's own HTTP server, one virtual thread per request, JSON through Jackson. No framework.
 
 `POST /runs` (`HttpApi.submit`) writes the turn row and its queue message in one transaction (`RunQueue.submit`) and answers `202` with the id. The loop runs in the other process, `worker`, over the same SQLite file: it takes the message and runs the turn.
 
@@ -200,9 +202,9 @@ $ curl -s http://localhost:62588/turns/r-fda1
 ## Streaming the answer
 
 - The stream is what the loop pushes out as the turn runs: a `step` event for every row it writes, a `token` event for each piece of the answer as the model produces it, and `done` with the answer at the end.
-- The model streams only to the loop. The loop forwards answer text to the run's stream as it arrives, and buffers a tool call until it is complete, because it has to see the whole call to run it. In v2 the stub's decisions have no text; its final reply, the relayed answer, streams word by word through the same model interface.
+- The model streams only to the loop. In production the loop forwards answer text to the run's stream as it arrives and buffers a tool call until it is complete, because it has to see the whole call to run it. In v2 the stub's decisions have no text; its final reply, the relayed answer, streams word by word through the same model interface.
 - The API holds the run's stream and forwards it over SSE on a second request, `GET /turns/{id}/events`, kept open. Every entry has an id; a client that reconnects sends `Last-Event-ID` and gets only the tail. Nothing twice.
-- In production the run's stream is a Redis Stream per job id, so any API node can serve any client; that is on the scaling page. In v2 it is a map in the API process, and the worker pushes into it over HTTP, `POST /turns/{id}/events`: the one network call between the two processes.
+- At scale the run's stream is a Redis Stream per job id, so any API node can serve any client; that is on the scaling page, as design. In v2 it is a map in the API process, and the worker pushes into it over HTTP, `POST /turns/{id}/events`: the one network call between the two processes.
 - The store is not the source of the stream. It is read only if the stream is gone: the API restarted, the client came after the stream's time ran out, or no worker fed it. Then the saved rows go out once, with the answer.
 - A client that disconnects does not stop the turn; the worker keeps pushing, the next listener reads from its last id.
 
@@ -354,7 +356,7 @@ Five steps, ten tokens, then `done`; the reconnect starts at 3. In the demo's `-
 | Option | How it works | What you get | What it costs |
 |---|---|---|---|
 | a file per run | one JSON line per step in `runs/<id>.jsonl` | nothing to install | no turn row, no status, nothing to query across turns |
-| SQLite, one file | the three tables in `harness.db` | one file, zero setup, SQL for status and queries, the same shape a real database has | one writer at a time, one machine |
+| SQLite, one file | the four tables in `harness.db` | one file, zero setup, SQL for status and queries, the same shape a real database has | one writer at a time, one machine |
 | a database server | the same tables on Postgres | many API nodes and workers share one truth | something to run |
 
 I pick SQLite here: the smallest thing with a turn row and a query, and the tables move to a database server unchanged the day a second machine needs them.

@@ -2,7 +2,7 @@
 
 [The issue](#the-issue) · [The choices](#the-choices) · [What I ran](#what-i-ran-on-my-platform-in-production) · [Agent as a tool](#agent-as-a-tool) · [The implementation](#the-implementation) · [Proof](#proof) · [The DAG](#the-dag)
 
-A run can hand a question to another agent and get the answer back as a tool result: the child is the same loop class, run inside the tool call, its rows in the same turn (job id). There are more multi-agent patterns in the frameworks than the three on this page; these are the ones I have run in production at scale, and they cover most of what teams need. Every output below is pasted from `demo-output.txt`, which `./demo.sh` writes.
+A run can hand a question to another agent and get the answer back as a tool result: the child is the same loop class, run inside the tool call, its rows in the same turn (job id). There are more multi-agent patterns in the frameworks than the three on this page; these are the ones I have run at scale, one of them only as far as pre-production, and they cover most of what teams need. Every output below is pasted from `demo-output.txt`, which `./demo.sh` writes.
 
 ## The issue
 
@@ -38,7 +38,7 @@ Things to watch for:
 - We picked a framework's group chat as our first multi-agent default. I had not researched the pattern enough.
 - One release in, with teams building on it, the numbers came back: up to twice the model calls, and every agent reading the whole conversation.
 - I went to leadership and stopped new teams on it. The paths we knew moved onto our DAG, the rest onto agent as a tool.
-- Median latency on the migrated paths dropped by about a third. The cost was one missed release for the teams on it, caught before production.
+- Median latency on the migrated paths dropped by about a third. The cost: the teams on it missed one release while they moved, before any of their agents reached customers.
 
 ## Agent as a tool
 
@@ -55,7 +55,7 @@ The example: `concierge` (tools `order_status`, `ask_logistics`) is asked "Where
 | 5 | 0 | AGENT | `ask_logistics` → the child's answer: the one row that crosses back |
 | 6 | 0 | LLM | the concierge says Done; the turn's answer is the child's answer |
 
-The child sees only what the parent hands it: the goal, and its own tools. The parent sees only what comes back: the answer, as a tool result. Nothing else crosses, in either direction: not the child's prompt, reasoning or tool outputs, not the parent's question or history.
+The child sees only what the parent hands it: the goal, and its own tools. The parent sees only what comes back: the answer, as a tool result. Nothing else crosses, in either direction: not the child's prompt, reasoning or tool outputs, not the parent's rows or history. The goal is all the child gets, and with the stub the goal is the parent's question.
 
 - **API layer**: nothing new; a `concierge` turn is one id and one stream like any other.
 - **Orchestrator**: the parent loop; an `agent` tool's call runs a child Orchestrator, the same class, with depth + 1 and the turn's budget passed into its constructor.
@@ -93,7 +93,7 @@ private String delegate(Agent child, String goal) {
     }
     Turn turn = conversation.turns().getLast();
     ToolCaller childCaller = new ToolCaller(registry, child.toolNames(), Duration.ofMillis(child.toolTimeoutMs()));
-    Orchestrator childLoop = new Orchestrator(child, registry, llm, childCaller, summarizer, store, listener,
+    Orchestrator childLoop = new Orchestrator(child, registry, llm, childCaller, store, listener,
             depth + 1, lastSpan, budget);
     return childLoop.asChild(conversation.id(), turn.id(), goal);
 }
@@ -283,6 +283,6 @@ done r-1e43 · 9 spans · 173 ms · DONE in harness.db · acked · handler calls
 
 ## The DAG
 
-The other pattern, for when the sequence is known. Most of the time you do know your workflow, and workflows can be long, so scaling them is the concern. The DAG holds the flow and the model never decides it: the routing is the edges, zero tokens, replayable, testable. Where a model node does route, at the top of the DAG, it routes on its inputs only. The leak to guard is the one in the watch list under [The choices](#the-choices): the nodes share one conversation, so only a node's output may pass to the next.
+The other pattern, for when the sequence is known. Most workflows are known up front and long-running, so what matters is that a run survives its worker and can be replayed; that is why the engine, not the model, should hold the sequence. The DAG holds the flow and the model never decides it: the routing is the edges, zero tokens, replayable, testable. Where a model node does route, at the top of the DAG, it routes on its inputs only. The leak to guard is the one in the watch list under [The choices](#the-choices): the nodes share one conversation, so only a node's output may pass to the next.
 
 For this proof of concept I built agent as a tool, because the example's sequence is not known up front and it fits the loop we already have. The DAG is just as implementable. My platform ended up with both, the DAG on our own engine. If I built it again I would put the DAG on a workflow engine such as Temporal, for the durability and the replay: a long workflow survives its worker. I have not run one, so that is a direction, not a result. Which one a platform leans on depends on its workloads.
