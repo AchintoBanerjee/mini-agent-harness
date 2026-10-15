@@ -115,12 +115,7 @@ run r-eccf · 2 passes · 2 tool calls · 356 ms · runs/r-eccf.jsonl · handler
 
 `--crash-after 1` exits the process (code 3) right after row 1, the LLM row that decided the
 tool call, is persisted. The log survived, so `resume` rebuilds the turn, runs the decided call
-without asking the model again, and finishes the loop. (`--crash-before-persist` is the other
-window: the tool ran, its TOOL row never landed. The crash line prints
-`handler calls: order_status=1`; `resume` runs the call again and its own footer prints
-`handler calls: order_status=1` too, so the handler ran twice across the two processes. The
-count is a per-process static map, so no single footer ever shows 2. That window is not in
-`demo.sh`.)
+without asking the model again, and finishes the loop. The second window is below.
 
 ```
 $ java -cp "target/classes:target/lib/*" harness.cli.Main run --agent support "What is the status of order ORD-1?" --crash-after 1
@@ -133,6 +128,23 @@ $ java -cp "target/classes:target/lib/*" harness.cli.Main resume r-c8d3
   4  LLM   pass 2 -> Done[]  [OK 1 ms]
 answer: Order ORD-1: SHIPPED, shipment SHP-1
 run r-c8d3 · 2 passes · 1 tool calls · 62 ms · runs/r-c8d3.jsonl · handler calls: order_status=1
+```
+
+### the other crash window: the tool ran, the row never landed
+
+`--crash-before-persist` exits after the tool did its work but before its TOOL row was written. The crash line prints `handler calls: shipping_status=1`; `resume` finds only the LLM row, runs the decided call again, and its own footer prints `shipping_status=1` too, so the handler ran twice across the two processes. That is the at-least-once window: the harness supplies the idempotency key, and a tool with a side effect dedups by it.
+
+```
+$ java -cp "target/classes:target/lib/*" harness.cli.Main run --agent support "Where is my shipment SHP-1?" --crash-before-persist
+  1  LLM   pass 1 -> ToolCall[toolName=shipping_status, input={shipmentId=SHP-1}]  [OK 4 ms]
+crash: exit 3 after shipping_status ran, before its TOOL row was written (simulated) · handler calls: shipping_status=1
+(the handler ran once in that process and the TOOL row never landed; runs/r-a01f.jsonl holds only the LLM row, so resume runs the decided call again:)
+$ java -cp "target/classes:target/lib/*" harness.cli.Main resume r-a01f
+  2  NOTE  resumed from step 1  [OK 0 ms]
+  3  TOOL  shipping_status {shipmentId=SHP-1} -> Shipment SHP-1: IN TRANSIT, arriving 2026-10-16  [OK 0 ms]
+  4  LLM   pass 2 -> Done[]  [OK 1 ms]
+answer: Shipment SHP-1: IN TRANSIT, arriving 2026-10-16
+run r-a01f · 2 passes · 1 tool calls · 66 ms · runs/r-a01f.jsonl · handler calls: shipping_status=1
 ```
 
 `replay <runId> [fromStep]` prints the stored rows of any run from that step on, in the same format.
