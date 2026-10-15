@@ -1,6 +1,6 @@
 # v2 HLD: keeping it simple
 
-[What v2 is](#what-v2-is) · [The data model](#the-data-model) · [The HTTP endpoints](#the-http-endpoints) · [Streaming the answer](#streaming-the-answer) · [Persistence](#persistence) · [Agents and tools are metadata](#agents-and-tools-are-metadata) · [Try it](#try-it) · next: [v2: additional features](V2_FEATURES.md)
+[What v2 is](#what-v2-is) · [One question, several tool calls](#one-question-several-tool-calls) · [The data model](#the-data-model) · [The HTTP endpoints](#the-http-endpoints) · [Streaming the answer](#streaming-the-answer) · [Persistence](#persistence) · [Agents and tools are metadata](#agents-and-tools-are-metadata) · [Try it](#try-it) · next: [v2: additional features](V2_FEATURES.md)
 
 The harness as a small service: you call it over HTTP, its state lives in one SQLite file, and the answer streams back as the steps happen. The model is still a stub; nothing needs a key or a network. Every output below is from a real run of `./demo.sh`; the committed `demo-output.txt` is a later run, so its ids and timings differ, nothing else.
 
@@ -22,6 +22,38 @@ Why a job id and a stream, when the stub answers in milliseconds:
 - In production a turn is several seconds of model and tool calls, and longer once tools call real systems.
 - So a turn is a job: the id comes back at once, the answer streams as the steps land, a client that drops reconnects with the last step it saw.
 - Durability needs the same id, so we design for it now.
+
+## One question, several tool calls
+
+- The loop asks the model, runs what it names, writes the rows, and asks again with those rows in the context, until the model says done. A chain is nothing more than that: pass 2 decided from pass 1's result.
+- **Sequential**, when the second lookup needs the first's result. "What is the status of order ORD-1?": pass 1 asks for the order; pass 2 reads "shipment SHP-1" in the order's result and asks for the shipment; pass 3 says done because the results name nothing new. Five rows, three passes, and the answer relays both results.
+- **Parallel**, when the question names two independent things. "Status of order ORD-2 and is product PRD-1 available?": pass 1 names both tools in one reply, they run together, a note row says wall against work, pass 2 says done.
+- What decides which: the model, from what it has read so far. The stub does the same with rules, the question in pass 1 and the results after it. The loop does not know the difference.
+- A dead worker's successor continues a chain: it loads the saved rows, does not run the saved call again, and takes the next decision from them. The durability page has that run.
+
+The two runs, from the worker's log:
+
+```
+received r-fda1: attempt 1 · agent support · "What is the status of order ORD-1?"
+  1  LLM   pass 1 -> ToolCall[toolName=order_status, input={orderId=ORD-1}]  [OK 3 ms]
+  2  TOOL  order_status {orderId=ORD-1} -> Order ORD-1: SHIPPED, shipment SHP-1  [OK 0 ms]
+  3  LLM   pass 2 -> ToolCall[toolName=shipping_status, input={shipmentId=SHP-1}]  [OK 0 ms]
+  4  TOOL  shipping_status {shipmentId=SHP-1} -> Shipment SHP-1: IN TRANSIT, arriving 2026-10-16  [OK 0 ms]
+  5  LLM   pass 3 -> Done[]  [OK 0 ms]
+answer: Order ORD-1: SHIPPED, shipment SHP-1
+Shipment SHP-1: IN TRANSIT, arriving 2026-10-16
+```
+
+```
+received r-ab46: attempt 1 · agent support · "Status of order ORD-2 and is product PRD-1 available?"
+  1  LLM   pass 1 -> ToolCalls[calls=[ToolCall[toolName=order_status, input={orderId=ORD-2}], ToolCall[toolName=stock_status, input={productId=PRD-1}]]]  [OK 3 ms]
+  2  TOOL  order_status {orderId=ORD-2} -> Order ORD-2: PROCESSING  [OK 302 ms]
+  3  TOOL  stock_status {productId=PRD-1} -> Product PRD-1: 42 units in stock  [OK 302 ms]
+  4  NOTE  ran 2 tools together: wall 305 ms, work 604 ms  [OK 305 ms]
+  5  LLM   pass 2 -> Done[]  [OK 0 ms]
+answer: Order ORD-2: PROCESSING
+Product PRD-1: 42 units in stock
+```
 
 ## The data model
 
@@ -80,31 +112,98 @@ The turn row and its queue message go in first, in one transaction, the `202` go
 <details><summary>proof: POST a question, then GET the turn</summary>
 
 ```
-$ curl -s -X POST http://localhost:58833/runs -d '{"agent":"support","question":"What is the status of order ORD-1?"}'
+$ curl -s -X POST http://localhost:62588/runs -d '{"agent":"support","question":"What is the status of order ORD-1?"}'
 {
-  "turnId" : "r-478b",
-  "jobId" : "r-478b",
-  "conversationId" : "c-2674",
+  "turnId" : "r-fda1",
+  "jobId" : "r-fda1",
+  "conversationId" : "c-4404",
   "status" : "QUEUED"
 }
-$ curl -s http://localhost:58833/turns/r-478b
+(202 came back at once with the turn QUEUED; the worker took it, and one second later the turn row says DONE, who ran it, the answer, and the spans: five rows over three passes. Pass 1 asks for the order; pass 2 reads SHP-1 in the order's result and asks for the shipment, decided from that row, not from the question; pass 3 says done because the results name nothing new. The answer relays both results, one line each:)
+$ curl -s http://localhost:62588/turns/r-fda1
 {
-  "id" : "r-478b",
-  "conversationId" : "c-2674",
+  "id" : "r-fda1",
+  "conversationId" : "c-4404",
   "agent" : "support",
   "question" : "What is the status of order ORD-1?",
-  "answer" : "Order ORD-1: SHIPPED, shipment SHP-1",
+  "answer" : "Order ORD-1: SHIPPED, shipment SHP-1\nShipment SHP-1: IN TRANSIT, arriving 2026-10-16",
   "status" : "DONE",
-  "claimedBy" : "31582",
+  "claimedBy" : "48745",
   "attempts" : 1,
-  "spans" : [
-    { "span" : 1, "pass" : 1, "kind" : "LLM",  "response" : "ToolCall[toolName=order_status, input={orderId=ORD-1}]", "status" : "OK", "ms" : 4 },
-    { "span" : 2, "pass" : 1, "kind" : "TOOL", "response" : "Order ORD-1: SHIPPED, shipment SHP-1", "status" : "OK", "ms" : 0, "attrs" : { "key" : "r-478b/1" } },
-    { "span" : 3, "pass" : 2, "kind" : "LLM",  "response" : "Done[]", "status" : "OK", "ms" : 0 }
-  ]
+  "createdAt" : 1792045726436,
+  "updatedAt" : 1792045726891,
+  "spans" : [ {
+    "turnId" : "r-fda1",
+    "span" : 1,
+    "pass" : 1,
+    "kind" : "LLM",
+    "request" : "pass 1",
+    "response" : "ToolCall[toolName=order_status, input={orderId=ORD-1}]",
+    "status" : "OK",
+    "ms" : 3,
+    "attrs" : {
+      "question" : "What is the status of order ORD-1?",
+      "tool" : "order_status",
+      "orderId" : "ORD-1"
+    }
+  }, {
+    "turnId" : "r-fda1",
+    "span" : 2,
+    "pass" : 1,
+    "kind" : "TOOL",
+    "request" : "order_status {orderId=ORD-1}",
+    "response" : "Order ORD-1: SHIPPED, shipment SHP-1",
+    "status" : "OK",
+    "ms" : 0,
+    "attrs" : {
+      "tool" : "order_status",
+      "orderId" : "ORD-1",
+      "key" : "r-fda1/1"
+    }
+  }, {
+    "turnId" : "r-fda1",
+    "span" : 3,
+    "pass" : 2,
+    "kind" : "LLM",
+    "request" : "pass 2",
+    "response" : "ToolCall[toolName=shipping_status, input={shipmentId=SHP-1}]",
+    "status" : "OK",
+    "ms" : 0,
+    "attrs" : {
+      "question" : "What is the status of order ORD-1?",
+      "tool" : "shipping_status",
+      "shipmentId" : "SHP-1"
+    }
+  }, {
+    "turnId" : "r-fda1",
+    "span" : 4,
+    "pass" : 2,
+    "kind" : "TOOL",
+    "request" : "shipping_status {shipmentId=SHP-1}",
+    "response" : "Shipment SHP-1: IN TRANSIT, arriving 2026-10-16",
+    "status" : "OK",
+    "ms" : 0,
+    "attrs" : {
+      "tool" : "shipping_status",
+      "shipmentId" : "SHP-1",
+      "key" : "r-fda1/3"
+    }
+  }, {
+    "turnId" : "r-fda1",
+    "span" : 5,
+    "pass" : 3,
+    "kind" : "LLM",
+    "request" : "pass 3",
+    "response" : "Done[]",
+    "status" : "OK",
+    "ms" : 0,
+    "attrs" : {
+      "question" : "What is the status of order ORD-1?"
+    }
+  } ]
 }
 ```
-The `202` came back before any worker had looked. One second later the turn is `DONE` with three spans, the answer, and the pid of the worker that ran it. The TOOL span's `key` is the job id plus the span that decided it: the idempotency key a tool that writes would use. (Trimmed; the full rows are in `demo-output.txt`.)
+The `202` came back before any worker had looked. One second later the turn is `DONE` with five spans over three passes, the answer with both lines, and the pid of the worker that ran it. Span 3 is the chain: pass 2 asked for the shipment because span 2 named it. Each TOOL span's `key` is the job id plus the span that decided it, the idempotency key a tool that writes would use.
 </details>
 
 ## Streaming the answer
@@ -152,72 +251,128 @@ while (!stopped) {
 <details><summary>proof: the stream, then a reconnect with Last-Event-ID</summary>
 
 ```
-$ curl -sN --max-time 5 http://localhost:58348/turns/r-8467/events
+$ curl -sN --max-time 5 http://localhost:62588/turns/r-fda1/events
 id: 1
 event: step
-data: {"turnId":"r-8467","span":1,"pass":1,"kind":"LLM","request":"pass 1","response":"ToolCall[toolName=order_status, input={orderId=ORD-1}]","status":"OK","ms":2,"attrs":{"question":"What is the status of order ORD-1?","tool":"order_status","orderId":"ORD-1"}}
+data: {"turnId":"r-fda1","span":1,"pass":1,"kind":"LLM","request":"pass 1","response":"ToolCall[toolName=order_status, input={orderId=ORD-1}]","status":"OK","ms":3,"attrs":{"question":"What is the status of order ORD-1?","tool":"order_status","orderId":"ORD-1"}}
 
 id: 2
 event: step
-data: {"turnId":"r-8467","span":2,"pass":1,"kind":"TOOL","request":"order_status {orderId=ORD-1}","response":"Order ORD-1: SHIPPED, shipment SHP-1","status":"OK","ms":0,"attrs":{"tool":"order_status","orderId":"ORD-1","key":"r-8467/1"}}
+data: {"turnId":"r-fda1","span":2,"pass":1,"kind":"TOOL","request":"order_status {orderId=ORD-1}","response":"Order ORD-1: SHIPPED, shipment SHP-1","status":"OK","ms":0,"attrs":{"tool":"order_status","orderId":"ORD-1","key":"r-fda1/1"}}
 
 id: 3
 event: step
-data: {"turnId":"r-8467","span":3,"pass":2,"kind":"LLM","request":"pass 2","response":"Done[]","status":"OK","ms":0,"attrs":{"question":"What is the status of order ORD-1?"}}
+data: {"turnId":"r-fda1","span":3,"pass":2,"kind":"LLM","request":"pass 2","response":"ToolCall[toolName=shipping_status, input={shipmentId=SHP-1}]","status":"OK","ms":0,"attrs":{"question":"What is the status of order ORD-1?","tool":"shipping_status","shipmentId":"SHP-1"}}
 
 id: 4
-event: token
-data: {"turnId":"r-8467","text":"Order "}
+event: step
+data: {"turnId":"r-fda1","span":4,"pass":2,"kind":"TOOL","request":"shipping_status {shipmentId=SHP-1}","response":"Shipment SHP-1: IN TRANSIT, arriving 2026-10-16","status":"OK","ms":0,"attrs":{"tool":"shipping_status","shipmentId":"SHP-1","key":"r-fda1/3"}}
 
 id: 5
-event: token
-data: {"turnId":"r-8467","text":"ORD-1: "}
+event: step
+data: {"turnId":"r-fda1","span":5,"pass":3,"kind":"LLM","request":"pass 3","response":"Done[]","status":"OK","ms":0,"attrs":{"question":"What is the status of order ORD-1?"}}
 
 id: 6
 event: token
-data: {"turnId":"r-8467","text":"SHIPPED, "}
+data: {"turnId":"r-fda1","text":"Order "}
 
 id: 7
 event: token
-data: {"turnId":"r-8467","text":"shipment "}
+data: {"turnId":"r-fda1","text":"ORD-1: "}
 
 id: 8
 event: token
-data: {"turnId":"r-8467","text":"SHP-1"}
+data: {"turnId":"r-fda1","text":"SHIPPED, "}
+
+id: 9
+event: token
+data: {"turnId":"r-fda1","text":"shipment "}
+
+id: 10
+event: token
+data: {"turnId":"r-fda1","text":"SHP-1\nShipment "}
+
+id: 11
+event: token
+data: {"turnId":"r-fda1","text":"SHP-1: "}
+
+id: 12
+event: token
+data: {"turnId":"r-fda1","text":"IN "}
+
+id: 13
+event: token
+data: {"turnId":"r-fda1","text":"TRANSIT, "}
+
+id: 14
+event: token
+data: {"turnId":"r-fda1","text":"arriving "}
+
+id: 15
+event: token
+data: {"turnId":"r-fda1","text":"2026-10-16"}
 
 event: done
-data: {"turnId":"r-8467","status":"DONE","answer":"Order ORD-1: SHIPPED, shipment SHP-1"}
+data: {"turnId":"r-fda1","status":"DONE","answer":"Order ORD-1: SHIPPED, shipment SHP-1\nShipment SHP-1: IN TRANSIT, arriving 2026-10-16"}
 
 (a client that reconnects sends the last id it saw:)
-$ curl -sN --max-time 5 -H 'Last-Event-ID: 2' http://localhost:58348/turns/r-8467/events
+$ curl -sN --max-time 5 -H 'Last-Event-ID: 2' http://localhost:62588/turns/r-fda1/events
 id: 3
 event: step
-data: {"turnId":"r-8467","span":3,"pass":2,"kind":"LLM","request":"pass 2","response":"Done[]","status":"OK","ms":0,"attrs":{"question":"What is the status of order ORD-1?"}}
+data: {"turnId":"r-fda1","span":3,"pass":2,"kind":"LLM","request":"pass 2","response":"ToolCall[toolName=shipping_status, input={shipmentId=SHP-1}]","status":"OK","ms":0,"attrs":{"question":"What is the status of order ORD-1?","tool":"shipping_status","shipmentId":"SHP-1"}}
 
 id: 4
-event: token
-data: {"turnId":"r-8467","text":"Order "}
+event: step
+data: {"turnId":"r-fda1","span":4,"pass":2,"kind":"TOOL","request":"shipping_status {shipmentId=SHP-1}","response":"Shipment SHP-1: IN TRANSIT, arriving 2026-10-16","status":"OK","ms":0,"attrs":{"tool":"shipping_status","shipmentId":"SHP-1","key":"r-fda1/3"}}
 
 id: 5
-event: token
-data: {"turnId":"r-8467","text":"ORD-1: "}
+event: step
+data: {"turnId":"r-fda1","span":5,"pass":3,"kind":"LLM","request":"pass 3","response":"Done[]","status":"OK","ms":0,"attrs":{"question":"What is the status of order ORD-1?"}}
 
 id: 6
 event: token
-data: {"turnId":"r-8467","text":"SHIPPED, "}
+data: {"turnId":"r-fda1","text":"Order "}
 
 id: 7
 event: token
-data: {"turnId":"r-8467","text":"shipment "}
+data: {"turnId":"r-fda1","text":"ORD-1: "}
 
 id: 8
 event: token
-data: {"turnId":"r-8467","text":"SHP-1"}
+data: {"turnId":"r-fda1","text":"SHIPPED, "}
+
+id: 9
+event: token
+data: {"turnId":"r-fda1","text":"shipment "}
+
+id: 10
+event: token
+data: {"turnId":"r-fda1","text":"SHP-1\nShipment "}
+
+id: 11
+event: token
+data: {"turnId":"r-fda1","text":"SHP-1: "}
+
+id: 12
+event: token
+data: {"turnId":"r-fda1","text":"IN "}
+
+id: 13
+event: token
+data: {"turnId":"r-fda1","text":"TRANSIT, "}
+
+id: 14
+event: token
+data: {"turnId":"r-fda1","text":"arriving "}
+
+id: 15
+event: token
+data: {"turnId":"r-fda1","text":"2026-10-16"}
 
 event: done
-data: {"turnId":"r-8467","status":"DONE","answer":"Order ORD-1: SHIPPED, shipment SHP-1"}
+data: {"turnId":"r-fda1","status":"DONE","answer":"Order ORD-1: SHIPPED, shipment SHP-1\nShipment SHP-1: IN TRANSIT, arriving 2026-10-16"}
 ```
-Three steps, five tokens, then `done`; the reconnect starts at 3. In the `--slow` section of the demo the stream was opened before the worker started: the client saw the two lookups overlap and the tokens arrive 40 ms apart (`demo-output.txt`).
+Five steps, ten tokens, then `done`; the reconnect starts at 3. In the `--slow` section of the demo the stream was opened before the worker started: the client saw the two lookups overlap and the tokens arrive 40 ms apart (`demo-output.txt`).
 </details>
 
 ## Persistence
@@ -236,22 +391,24 @@ I pick SQLite here: the smallest thing with a turn row and a query, and the tabl
 $ sqlite3 -header -column harness.db "SELECT t.id, c.agent, t.status, t.attempts FROM turn t JOIN conversation c ON c.id = t.conversation_id ORDER BY t.rowid"
 id      agent      status  attempts
 ------  ---------  ------  --------
-r-e841  support    DONE    1       
-r-446c  chaos      DONE    1       
-r-0630  support    DONE    1       
-r-c6f0  support    DONE    1       
-r-5085  concierge  DONE    1       
-r-badd  loop       DONE    1       
-r-505e  support    DONE    2       
-$ sqlite3 -header -column harness.db "SELECT span, pass, kind, status, ms FROM span WHERE turn_id = 'r-505e'"
+r-082d  support    DONE    1       
+r-6be2  chaos      DONE    1       
+r-7b0d  support    DONE    1       
+r-f777  support    DONE    1       
+r-40f3  concierge  DONE    1       
+r-c774  loop       DONE    1       
+r-c128  support    DONE    2       
+$ sqlite3 -header -column harness.db "SELECT span, pass, kind, status, ms FROM span WHERE turn_id = 'r-c128'"
 span  pass  kind  status  ms
 ----  ----  ----  ------  --
 1     1     LLM   OK      4 
 2     1     TOOL  OK      0 
 3     1     NOTE  OK      0 
 4     2     LLM   OK      1 
+5     2     TOOL  OK      0 
+6     3     LLM   OK      0 
 ```
-Seven turns from one run of the demo, two of them the sub-agent page's; the last one is the durability turn, two attempts, four spans including the resume note.
+Seven turns from one run of the demo, two of them the sub-agent page's; the last one is the durability turn, two attempts, six spans: the resume note, then the chain's second lookup and the done, written by the second worker.
 </details>
 
 ## Agents and tools are metadata

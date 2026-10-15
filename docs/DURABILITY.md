@@ -122,74 +122,77 @@ The store says whether a worker died on this job (it has steps), so resuming is 
 
 ## Proof
 
-The demo, the bare minimum, two processes on one laptop: submit, a worker process that dies after its second row, two seconds for the lease to run out, a second worker process resuming from that row, the turn DONE over HTTP.
+The demo, the bare minimum, two processes on one laptop: submit, a worker process that dies after its second row, two seconds for the lease to run out, a second worker process resuming from that row and continuing the chain, the turn DONE over HTTP.
 
 <details><summary>proof: the crash, the expired lease, the resume</summary>
 
 ```
 (submit writes the turn row QUEUED and its queue message without HTTP, and comes back with the id:)
 $ java --enable-native-access=ALL-UNNAMED -cp "target/classes:target/lib/*" harness.cli.Main submit --agent support "What is the status of order ORD-1?"
-submitted r-5a9e · QUEUED in harness.db · agent support · "What is the status of order ORD-1?"
-$ curl -s http://localhost:58833/turns/r-5a9e
+submitted r-26e4 · QUEUED in harness.db · agent support · "What is the status of order ORD-1?"
+$ curl -s http://localhost:62588/turns/r-26e4
 {
-  "id" : "r-5a9e",
-  "conversationId" : "c-28f7",
+  "id" : "r-26e4",
+  "conversationId" : "c-adda",
   "agent" : "support",
   "question" : "What is the status of order ORD-1?",
   "answer" : null,
   "status" : "QUEUED",
   "claimedBy" : null,
   "attempts" : 0,
-  "createdAt" : 1792034463944,
-  "updatedAt" : 1792034463944,
+  "createdAt" : 1792045734821,
+  "updatedAt" : 1792045734821,
   "spans" : [ ]
 }
-(a worker takes it with a 2000 ms lease and dies right after its 2nd row is persisted: exit 3, no ack)
-$ java --enable-native-access=ALL-UNNAMED -cp "target/classes:target/lib/*" harness.cli.Main worker --once --crash-after 2 --visibility-ms 2000
-worker pid 31638 · lease 2000 ms · once · harness.db
-received r-5a9e: attempt 1 · agent support · "What is the status of order ORD-1?"
-  1  LLM   pass 1 -> ToolCall[toolName=order_status, input={orderId=ORD-1}]  [OK 3 ms]
+(a worker takes it with a 2000 ms lease and dies right after its 2nd row is persisted: exit 3, no ack; the order lookup ran once in this process, so the crash line counts order_status=1)
+$ java --enable-native-access=ALL-UNNAMED -cp "target/classes:target/lib/*" harness.cli.Main worker --once --crash-after 2 --visibility-ms 2000 --api http://localhost:62588
+worker pid 48822 · lease 2000 ms · once · streams to http://localhost:62588 · harness.db
+received r-26e4: attempt 1 · agent support · "What is the status of order ORD-1?"
+  1  LLM   pass 1 -> ToolCall[toolName=order_status, input={orderId=ORD-1}]  [OK 2 ms]
   2  TOOL  order_status {orderId=ORD-1} -> Order ORD-1: SHIPPED, shipment SHP-1  [OK 0 ms]
-crash: exit 3 right after row 2 of turn r-5a9e was persisted (simulated) · handler calls: order_status=1
+crash: exit 3 right after row 2 of turn r-26e4 was persisted (simulated) · handler calls: order_status=1
 (process exited with code 3; the turn row says RUNNING, the message is still queued but hidden until the lease runs out)
 $ sleep 2
-(the lease has run out, so the next worker receives the same message again and resumes from the last saved step:)
-$ java --enable-native-access=ALL-UNNAMED -cp "target/classes:target/lib/*" harness.cli.Main worker --once
-worker pid 31642 · lease 2000 ms · once · harness.db
-received again: attempt 2, lease had expired · r-5a9e resumes from step 2
+(the lease has run out, so the next worker receives the same message again and resumes from the last saved step: it does not run the saved order_status call again, it continues the chain at pass 2, reads SHP-1 in the saved result, asks for the shipment and says done; its footer counts shipping_status=1 only, because order_status ran in the process that died:)
+$ java --enable-native-access=ALL-UNNAMED -cp "target/classes:target/lib/*" harness.cli.Main worker --once --api http://localhost:62588
+worker pid 48826 · lease 2000 ms · once · streams to http://localhost:62588 · harness.db
+received again: attempt 2, lease had expired · r-26e4 resumes from step 2
   3  NOTE  resumed from step 2  [OK 0 ms]
-  4  LLM   pass 2 -> Done[]  [OK 1 ms]
+  4  LLM   pass 2 -> ToolCall[toolName=shipping_status, input={shipmentId=SHP-1}]  [OK 1 ms]
+  5  TOOL  shipping_status {shipmentId=SHP-1} -> Shipment SHP-1: IN TRANSIT, arriving 2026-10-16  [OK 0 ms]
+  6  LLM   pass 3 -> Done[]  [OK 0 ms]
 answer: Order ORD-1: SHIPPED, shipment SHP-1
-done r-5a9e · 4 spans · 27 ms · DONE in harness.db · acked · handler calls: none
-(the API reads the same rows, whoever wrote them: DONE, attempt 2, claimed by the second worker's pid, all four spans)
-$ curl -s http://localhost:58833/turns/r-5a9e
+Shipment SHP-1: IN TRANSIT, arriving 2026-10-16
+done r-26e4 · 6 spans · 114 ms · DONE in harness.db · acked · handler calls: shipping_status=1
+(the API reads the same rows, whoever wrote them: DONE, attempt 2, claimed by the second worker's pid, all six spans, the answer with both lines)
+$ curl -s http://localhost:62588/turns/r-26e4
 {
-  "id" : "r-5a9e",
-  "conversationId" : "c-28f7",
+  "id" : "r-26e4",
+  "conversationId" : "c-adda",
   "agent" : "support",
   "question" : "What is the status of order ORD-1?",
-  "answer" : "Order ORD-1: SHIPPED, shipment SHP-1",
+  "answer" : "Order ORD-1: SHIPPED, shipment SHP-1\nShipment SHP-1: IN TRANSIT, arriving 2026-10-16",
   "status" : "DONE",
-  "claimedBy" : "31642",
+  "claimedBy" : "48826",
   "attempts" : 2,
-  "createdAt" : 1792034463944,
-  "updatedAt" : 1792034467037,
+  "createdAt" : 1792045734821,
+  "updatedAt" : 1792045738766,
   "spans" : [ {
-    "turnId" : "r-5a9e",
+    "turnId" : "r-26e4",
     "span" : 1,
     "pass" : 1,
     "kind" : "LLM",
     "request" : "pass 1",
     "response" : "ToolCall[toolName=order_status, input={orderId=ORD-1}]",
     "status" : "OK",
-    "ms" : 3,
+    "ms" : 2,
     "attrs" : {
       "question" : "What is the status of order ORD-1?",
       "tool" : "order_status",
       "orderId" : "ORD-1"
     }
   }, {
-    "turnId" : "r-5a9e",
+    "turnId" : "r-26e4",
     "span" : 2,
     "pass" : 1,
     "kind" : "TOOL",
@@ -200,10 +203,10 @@ $ curl -s http://localhost:58833/turns/r-5a9e
     "attrs" : {
       "tool" : "order_status",
       "orderId" : "ORD-1",
-      "key" : "r-5a9e/1"
+      "key" : "r-26e4/1"
     }
   }, {
-    "turnId" : "r-5a9e",
+    "turnId" : "r-26e4",
     "span" : 3,
     "pass" : 1,
     "kind" : "NOTE",
@@ -213,14 +216,42 @@ $ curl -s http://localhost:58833/turns/r-5a9e
     "ms" : 0,
     "attrs" : { }
   }, {
-    "turnId" : "r-5a9e",
+    "turnId" : "r-26e4",
     "span" : 4,
     "pass" : 2,
     "kind" : "LLM",
     "request" : "pass 2",
-    "response" : "Done[]",
+    "response" : "ToolCall[toolName=shipping_status, input={shipmentId=SHP-1}]",
     "status" : "OK",
     "ms" : 1,
+    "attrs" : {
+      "question" : "What is the status of order ORD-1?",
+      "tool" : "shipping_status",
+      "shipmentId" : "SHP-1"
+    }
+  }, {
+    "turnId" : "r-26e4",
+    "span" : 5,
+    "pass" : 2,
+    "kind" : "TOOL",
+    "request" : "shipping_status {shipmentId=SHP-1}",
+    "response" : "Shipment SHP-1: IN TRANSIT, arriving 2026-10-16",
+    "status" : "OK",
+    "ms" : 0,
+    "attrs" : {
+      "tool" : "shipping_status",
+      "shipmentId" : "SHP-1",
+      "key" : "r-26e4/4"
+    }
+  }, {
+    "turnId" : "r-26e4",
+    "span" : 6,
+    "pass" : 3,
+    "kind" : "LLM",
+    "request" : "pass 3",
+    "response" : "Done[]",
+    "status" : "OK",
+    "ms" : 0,
     "attrs" : {
       "question" : "What is the status of order ORD-1?"
     }
@@ -229,5 +260,5 @@ $ curl -s http://localhost:58833/turns/r-5a9e
 ```
 </details>
 
-- The first worker's last line is row 2 and `exit 3`; the second worker's first line is `received again: attempt 2, lease had expired`, its first new row is step 3, `resumed from step 2`, and its footer says `handler calls: none`: the saved tool call did not run again, and the model was asked once more, for pass 2 only.
-- `GET /turns/r-5a9e` after that: `DONE`, `attempts 2`, `claimedBy` is the second worker's pid, four spans and the answer; the API read the rows and never knew which process wrote which.
+- The first worker's last line is row 2 and `exit 3`, and its crash line counts `order_status=1`. The second worker's first line is `received again: attempt 2, lease had expired`, its first new row is step 3, `resumed from step 2`, and it continues the chain: it reads SHP-1 in the saved result, asks for the shipment at pass 2, and says done at pass 3. Its footer counts `shipping_status=1` only: the saved order lookup did not run again, and the model was not asked again for the decision it had already recorded.
+- `GET /turns/{id}` after that: `DONE`, `attempts 2`, `claimedBy` is the second worker's pid, six spans and the answer with both lines; the API read the rows and never knew which process wrote which.

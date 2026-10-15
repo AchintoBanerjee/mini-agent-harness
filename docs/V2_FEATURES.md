@@ -11,7 +11,7 @@ What the loop already does beyond the HLD picture, before the deep dives. Each o
 | a clock on every tool call | built: the agent's `toolTimeoutMs`, the call is cut off, the answer names it | the chaos stream in the demo |
 | the agent's tool list is the gate | built: a tool the model names outside the list is `DENIED` without running, the loop moves on | `OrchestratorTest` |
 | the pass cap and the budget | built: `maxPasses` per agent, `maxModelCalls` shared down a sub-agent tree, the depth cap | `OrchestratorTest`, `SubAgentTest`, the loop agent in the demo |
-| chaining across passes | the loop and resume support it; the stub decides once, in pass 1, and says done in pass 2, so no chain shows in v2 | the sub-agent run is the one chain the demo shows |
+| chaining across passes | built: after pass 1 the stub reads the results and asks for what they name; the status question is a three-pass chain, and a dead worker's successor continues it | the first turn of the demo; the durability section |
 | the answer | built: the last pass's results relayed, failures named; a model's final reply replaces it | every turn in the demo |
 
 ## The context is the memory
@@ -20,7 +20,7 @@ What the loop already does beyond the HLD picture, before the deep dives. Each o
 - The rows live in the store before the next pass is taken, so a worker that resumes loads them and builds the same context the dead one had. A chain continues where it stopped; the first lookup does not run again.
 - The rows only ever grow at the end. That is what lets the model server reuse what it already read, the prefix cache on the performance page.
 
-What pass 2 sees for the status question: the question again, row 1 (the decision) and row 2 (the result). The stub reads row 2 and says done; a real model reads "shipment SHP-1" in it and may ask for the next lookup.
+What pass 2 sees for the status question: the question again, row 1 (the decision) and row 2 (the result). The stub reads row 2, finds SHP-1 and asks for `shipping_status`; a real model does the same from the text. That is the chain.
 
 ```
 question: What is the status of order ORD-1?
@@ -41,11 +41,11 @@ private Context context(Turn turn) {
     return new Context(turn.question(), List.copyOf(turn.spans()), history);
 }
 
-// RuleBasedLLM: the stub reads the rows; a call row means the work is done
-for (Span span : context.spans()) {
-    if (span.kind().isCall()) {
-        return new Done();
-    }
+// RuleBasedLLM: pass 1 reads the question, later passes read the rows
+boolean callRowExists = context.spans().stream().anyMatch(span -> span.kind().isCall());
+List<ToolCall> calls = callRowExists ? chained(context.spans(), tools) : fromQuestion(context.question(), tools);
+if (calls.isEmpty()) {
+    return new Done();
 }
 ```
 </details>
@@ -142,9 +142,24 @@ Where: `Orchestrator.loop` for the cap and the budget, `TurnBudget`, `Orchestrat
 
 ## Chaining across passes
 
-- A chain is inside one turn: pass 2 asks for a tool because of what pass 1 returned. The loop is built for it. Pass N's tool result is in the context the model sees in pass N+1, so a model that needs a second lookup asks for it next, and so on until it says done. With a real model: "Where is my order ORD-1?" → pass 1 `order_status(ORD-1)` → "SHIPPED, shipment SHP-1" → pass 2 `shipping_status(SHP-1)` → pass 3 done. Resume works in the middle of a chain, because every pass is rows in the store.
-- The stub never chains. It reads the question once, in pass 1: every tool whose keywords and id pattern fit is called, one as a single call, several as one batch run together. In pass 2 it sees a call row in the context and says done. The missing piece is a decision made from a result, "the order says shipment SHP-1, look that up", and that is the model's job. Saying so plainly beats faking it with a rule.
-- The one chain v2 does show is the sub-agent run: the parent decides, the child runs its own pass, the parent gets the answer and finishes. Six rows, one turn:
+- A chain is inside one turn: pass 2 asks for a tool because of what pass 1 returned. Pass N's tool result is in the context the model sees in pass N+1, so a model that needs a second lookup asks for it next, and so on until it says done. Resume works in the middle of a chain, because every pass is rows in the store.
+- The stub does it with one rule. Pass 1 reads the question: every tool whose keywords and id pattern fit is called, one as a single call, several as one batch run together. Later passes read the results: every OK row is scanned for the ids each id-taking tool knows, and each tool and id that has no call row yet is called. A row that is a reference or a failure is not read. Done when nothing new is named. That is what a model does when a result names something it can look up.
+
+The status question, from the worker's log: pass 1 asks for the order, pass 2 asks for the shipment the order named, pass 3 says done:
+
+```
+received r-fda1: attempt 1 · agent support · "What is the status of order ORD-1?"
+  1  LLM   pass 1 -> ToolCall[toolName=order_status, input={orderId=ORD-1}]  [OK 3 ms]
+  2  TOOL  order_status {orderId=ORD-1} -> Order ORD-1: SHIPPED, shipment SHP-1  [OK 0 ms]
+  3  LLM   pass 2 -> ToolCall[toolName=shipping_status, input={shipmentId=SHP-1}]  [OK 0 ms]
+  4  TOOL  shipping_status {shipmentId=SHP-1} -> Shipment SHP-1: IN TRANSIT, arriving 2026-10-16  [OK 0 ms]
+  5  LLM   pass 3 -> Done[]  [OK 0 ms]
+answer: Order ORD-1: SHIPPED, shipment SHP-1
+Shipment SHP-1: IN TRANSIT, arriving 2026-10-16
+```
+
+- A dead worker's successor continues the chain: it loads rows 1 and 2, does not run the order lookup again, and takes the pass 2 decision from the saved result. The durability page has that run, with the two footers `order_status=1` and `shipping_status=1`.
+- The other shape of a chain is a child agent: the parent decides, the child runs its own pass, the parent gets the answer and finishes. Six rows, one turn:
 
 ```
   1  LLM   pass 1 -> ToolCall[toolName=ask_logistics, input={goal=Where is shipment SHP-1 for my order?}]
@@ -155,15 +170,16 @@ Where: `Orchestrator.loop` for the cap and the budget, `TurnBudget`, `Orchestrat
   6  LLM   pass 2 -> Done[]
 ```
 
-Where: `Orchestrator.loop` and `Orchestrator.context`; the sub-agents page has the rest.
+Where: `RuleBasedLLM.next` for the rule, `Orchestrator.loop` and `Orchestrator.context` for the loop; the sub-agents page has the rest of the child.
 
 ## The answer
 
-- What v2 does: the last pass's tool results, relayed unchanged, one per line in the order they ran. A repeated call is swapped for the output of the step it repeats. A tool that did not end OK is named with its status, so the failure reaches the user. No tool ran: "No tool for this question."
+- What v2 does: every tool result of the turn, relayed unchanged, one per line in the order they ran, each once. A repeated call is swapped for the output of the step it repeats. A tool that did not end OK is named with its status, so the failure reaches the user. A child agent's own rows stay inside its answer. No tool ran: "No tool for this question."
 
 | The turn | The answer |
 |---|---|
-| one tool, `order_status(ORD-1)` | `Order ORD-1: SHIPPED, shipment SHP-1` |
+| one lookup, `order_status(ORD-2)` | `Order ORD-2: PROCESSING` |
+| a chain, the order then the shipment it named | `Order ORD-1: SHIPPED, shipment SHP-1` ⏎ `Shipment SHP-1: IN TRANSIT, arriving 2026-10-16` |
 | two tools in one pass | `Order ORD-2: PROCESSING` ⏎ `Product PRD-1: 42 units in stock` |
 | the tool timed out | `Tool hang_forever TIMEOUT: cut off after 1000 ms` |
 | the tool threw | `Tool throw_boom ERROR: Tool failed: boom` |
