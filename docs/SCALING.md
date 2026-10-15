@@ -7,11 +7,11 @@ The loop itself is cheap. What has to scale is around it: the pods that run the 
 ## Scaling the orchestrator pods, CPU
 
 - Standard: Kubernetes autoscales the API pods on load, and the orchestrator pods on load and on the queue depth. Provision for spikes, keep a few pods warm. Nothing new here.
-- The consequence that matters: with the queue and the autoscaling, the pod that holds the user's connection and the pod that runs their turn are different pods, and pods come and go all the time. That is the next problem.
+- The consequence that matters: the queue already cut the direct line between the user's connection and the loop that runs their turn; the pod that holds the connection and the pod that runs the turn are different pods, with nothing joining them. That is the next problem.
 
 ## Scaling the persistent connection
 
-The user's connection is open on one API pod. Their turn is running on an orchestrator pod. Tomorrow both are different pods. The orchestrator has to reach whichever pod holds the connection, every time.
+The user's connection is open on one API pod. Their turn is running on an orchestrator pod, and there is no direct line between the two: the queue sits in the middle, so the orchestrator never knows which pod holds the connection, and if the connection drops and comes back it is on another pod. The orchestrator has to reach whichever pod holds the connection, every time.
 
 ![the stream across pods](scaling-stream.svg)
 
