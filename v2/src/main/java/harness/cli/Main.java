@@ -177,7 +177,7 @@ public class Main {
         return span -> {
             console.on(span);
             if (span.step() == n) {
-                System.out.println("crash: exit " + CRASH_EXIT + " right after row " + n
+                System.out.println("crash: exit " + CRASH_EXIT + " right after row " + n + " of run " + span.run()
                         + " was persisted (simulated) · handler calls: " + ToolLoader.handlerCalls());
                 System.exit(CRASH_EXIT);
             }
