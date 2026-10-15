@@ -83,8 +83,8 @@ Page: [docs/EVAL.md](docs/EVAL.md)
 
 Page: [docs/ROUTING.md](docs/ROUTING.md)
 
-- Design, from production. The router never chooses a model for an agent: the agent brings the models its golden set passed on, and the router only picks where to run it. Candidates are that set within what the tenant allows; a live conversation keeps its replica; otherwise the nearest permitted region whose meter is under the threshold, else the lowest meter; the fallback is the same list.
-- Strong or cheap is decided by evals, not by the router: the golden set against both models, the cheap one joins the set when the scores hold, the live judge watches after.
+- Design, from production. The router never chooses a model for an agent: the agent declares the models its golden set passed on, and the router only picks where to run one of them. Two factors with different jobs: distance sets the order in which regions are tried, from where the service runs; the governor's meter, under its threshold, decides whether a model in that region has room. A live conversation keeps its replica; the fallback continues the same walk.
+- Which models an agent may declare is decided by evals, not by the router: the golden set against a second model, it joins the set when the scores hold, the live judge watches after.
 
 ## 10 · Sandboxing tools
 
