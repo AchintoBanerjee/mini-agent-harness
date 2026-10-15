@@ -70,4 +70,4 @@ Performance is time and tokens, and it has its own page: [PERFORMANCE.md](PERFOR
 
 ## Out of scope
 
-Not built in this repo, said once: Redis and the multi-node stream, the inference gateway and the governor, the context budget and the summary fold, the tool catalog and its index. Each is a design above with the seam it plugs into named: the API layer, the model interface, the context builder, the tool registry.
+Not built in this repo: Redis and the multi-node stream, the inference gateway and the governor, the context budget and the summary fold, the tool catalog and its index. Each is a design above with the seam it plugs into named: the API layer, the model interface, the context builder, the tool registry.

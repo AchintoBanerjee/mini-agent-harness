@@ -34,7 +34,7 @@ Out of scope for the POC, in the design only: the dead-letter queue, a sweeper f
 
 ## The guarantee
 
-What the queue promises, and what it cannot, said once and shown on one turn.
+What the queue promises, and what it cannot, on one turn.
 
 ![the two places a worker can die](durability-windows.svg)
 
