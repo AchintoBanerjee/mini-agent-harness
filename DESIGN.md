@@ -19,6 +19,8 @@ One page that ties the pages together, in the order they were built: what was bu
 
 Page: [docs/V2_HLD.md](docs/V2_HLD.md)
 
+![v2 HLD](docs/hld.svg)
+
 - One service, two layers: the HTTP face and the loop. A turn is a job: `POST /runs` writes the turn row and answers with its id at once; the answer streams back over SSE as the steps and the tokens happen; `GET /turns/{id}` reads it after.
 - Three tables, from the whiteboard: a conversation has turns, a turn is one job, a turn has spans. Every step is written to the store before the next one is taken.
 - Agents and tools are files; the file's type picks the adapter; a builder would be its own service in front of this metadata.
