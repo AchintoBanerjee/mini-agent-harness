@@ -114,54 +114,54 @@ The demo over HTTP: the concierge turn, then the loop agent stopped by the depth
 <details><summary>proof: the concierge turn, the nested spans, the one answer</summary>
 
 ```
-$ curl -s -X POST http://localhost:65286/runs -d '{"agent":"concierge","question":"Where is shipment SHP-1 for my order?"}'
+$ curl -s -X POST http://localhost:62588/runs -d '{"agent":"concierge","question":"Where is shipment SHP-1 for my order?"}'
 {
-  "turnId" : "r-2bb0",
-  "jobId" : "r-2bb0",
-  "conversationId" : "c-1e17",
+  "turnId" : "r-e0ee",
+  "jobId" : "r-e0ee",
+  "conversationId" : "c-9a7f",
   "status" : "QUEUED"
 }
 (the worker prints the child's rows indented: the parent's decision, the child's three rows, the AGENT row with the child's answer, the parent's done)
-$ java --enable-native-access=ALL-UNNAMED -cp "target/classes:target/lib/*" harness.cli.Main worker --once
-worker pid 34457 · lease 2000 ms · once · harness.db
-received r-2bb0: attempt 1 · agent concierge · "Where is shipment SHP-1 for my order?"
-  1  LLM   pass 1 -> ToolCall[toolName=ask_logistics, input={goal=Where is shipment SHP-1 for my order?}]  [OK 4 ms]
+$ java --enable-native-access=ALL-UNNAMED -cp "target/classes:target/lib/*" harness.cli.Main worker --once --api http://localhost:62588
+worker pid 48806 · lease 2000 ms · once · streams to http://localhost:62588 · harness.db
+received r-e0ee: attempt 1 · agent concierge · "Where is shipment SHP-1 for my order?"
+  1  LLM   pass 1 -> ToolCall[toolName=ask_logistics, input={goal=Where is shipment SHP-1 for my order?}]  [OK 2 ms]
     2  LLM   pass 1 -> ToolCall[toolName=shipping_status, input={shipmentId=SHP-1}]  [OK 0 ms]
     3  TOOL  shipping_status {shipmentId=SHP-1} -> Shipment SHP-1: IN TRANSIT, arriving 2026-10-16  [OK 0 ms]
     4  LLM   pass 2 -> Done[]  [OK 0 ms]
-  5  AGENT  ask_logistics {goal=Where is shipment SHP-1 for my order?} -> Shipment SHP-1: IN TRANSIT, arriving 2026-10-16  [OK 5 ms]
+  5  AGENT  ask_logistics {goal=Where is shipment SHP-1 for my order?} -> Shipment SHP-1: IN TRANSIT, arriving 2026-10-16  [OK 10 ms]
   6  LLM   pass 2 -> Done[]  [OK 0 ms]
 answer: Shipment SHP-1: IN TRANSIT, arriving 2026-10-16
-done r-2bb0 · 6 spans · 71 ms · DONE in harness.db · acked · handler calls: shipping_status=1
+done r-e0ee · 6 spans · 123 ms · DONE in harness.db · acked · handler calls: shipping_status=1
 (the same rows over HTTP: the child's spans carry parent and depth in attrs, the AGENT span carries the child's answer, and the turn's answer is that answer)
-$ curl -s http://localhost:65286/turns/r-2bb0
+$ curl -s http://localhost:62588/turns/r-e0ee
 {
-  "id" : "r-2bb0",
-  "conversationId" : "c-1e17",
+  "id" : "r-e0ee",
+  "conversationId" : "c-9a7f",
   "agent" : "concierge",
   "question" : "Where is shipment SHP-1 for my order?",
   "answer" : "Shipment SHP-1: IN TRANSIT, arriving 2026-10-16",
   "status" : "DONE",
-  "claimedBy" : "34457",
+  "claimedBy" : "48806",
   "attempts" : 1,
-  "createdAt" : 1792036491001,
-  "updatedAt" : 1792036491632,
+  "createdAt" : 1792045732185,
+  "updatedAt" : 1792045732869,
   "spans" : [ {
-    "turnId" : "r-2bb0",
+    "turnId" : "r-e0ee",
     "span" : 1,
     "pass" : 1,
     "kind" : "LLM",
     "request" : "pass 1",
     "response" : "ToolCall[toolName=ask_logistics, input={goal=Where is shipment SHP-1 for my order?}]",
     "status" : "OK",
-    "ms" : 4,
+    "ms" : 2,
     "attrs" : {
       "question" : "Where is shipment SHP-1 for my order?",
       "tool" : "ask_logistics",
       "goal" : "Where is shipment SHP-1 for my order?"
     }
   }, {
-    "turnId" : "r-2bb0",
+    "turnId" : "r-e0ee",
     "span" : 2,
     "pass" : 1,
     "kind" : "LLM",
@@ -177,7 +177,7 @@ $ curl -s http://localhost:65286/turns/r-2bb0
       "depth" : "1"
     }
   }, {
-    "turnId" : "r-2bb0",
+    "turnId" : "r-e0ee",
     "span" : 3,
     "pass" : 1,
     "kind" : "TOOL",
@@ -188,12 +188,12 @@ $ curl -s http://localhost:65286/turns/r-2bb0
     "attrs" : {
       "tool" : "shipping_status",
       "shipmentId" : "SHP-1",
-      "key" : "r-2bb0/2",
+      "key" : "r-e0ee/2",
       "parent" : "1",
       "depth" : "1"
     }
   }, {
-    "turnId" : "r-2bb0",
+    "turnId" : "r-e0ee",
     "span" : 4,
     "pass" : 2,
     "kind" : "LLM",
@@ -207,21 +207,21 @@ $ curl -s http://localhost:65286/turns/r-2bb0
       "depth" : "1"
     }
   }, {
-    "turnId" : "r-2bb0",
+    "turnId" : "r-e0ee",
     "span" : 5,
     "pass" : 1,
     "kind" : "AGENT",
     "request" : "ask_logistics {goal=Where is shipment SHP-1 for my order?}",
     "response" : "Shipment SHP-1: IN TRANSIT, arriving 2026-10-16",
     "status" : "OK",
-    "ms" : 5,
+    "ms" : 10,
     "attrs" : {
       "tool" : "ask_logistics",
       "goal" : "Where is shipment SHP-1 for my order?",
-      "key" : "r-2bb0/1"
+      "key" : "r-e0ee/1"
     }
   }, {
-    "turnId" : "r-2bb0",
+    "turnId" : "r-e0ee",
     "span" : 6,
     "pass" : 2,
     "kind" : "LLM",
@@ -240,28 +240,28 @@ $ curl -s http://localhost:65286/turns/r-2bb0
 <details><summary>proof: the depth cap, an agent that lists itself as a tool</summary>
 
 ```
-$ curl -s -X POST http://localhost:65286/runs -d '{"agent":"loop","question":"loop, please"}'
+$ curl -s -X POST http://localhost:62588/runs -d '{"agent":"loop","question":"loop, please"}'
 {
-  "turnId" : "r-000b",
-  "jobId" : "r-000b",
-  "conversationId" : "c-58b7",
+  "turnId" : "r-1e43",
+  "jobId" : "r-1e43",
+  "conversationId" : "c-6e13",
   "status" : "QUEUED"
 }
 (loop delegates to loop delegates to loop; the loop at depth 2 may not delegate again, so its call is refused with an ERROR row, depth limit, and the answer climbs back up)
-$ java --enable-native-access=ALL-UNNAMED -cp "target/classes:target/lib/*" harness.cli.Main worker --once
-worker pid 34465 · lease 2000 ms · once · harness.db
-received r-000b: attempt 1 · agent loop · "loop, please"
-  1  LLM   pass 1 -> ToolCall[toolName=ask_loop, input={goal=loop, please}]  [OK 4 ms]
+$ java --enable-native-access=ALL-UNNAMED -cp "target/classes:target/lib/*" harness.cli.Main worker --once --api http://localhost:62588
+worker pid 48814 · lease 2000 ms · once · streams to http://localhost:62588 · harness.db
+received r-1e43: attempt 1 · agent loop · "loop, please"
+  1  LLM   pass 1 -> ToolCall[toolName=ask_loop, input={goal=loop, please}]  [OK 2 ms]
     2  LLM   pass 1 -> ToolCall[toolName=ask_loop, input={goal=loop, please}]  [OK 0 ms]
       3  LLM   pass 1 -> ToolCall[toolName=ask_loop, input={goal=loop, please}]  [OK 0 ms]
       4  AGENT  ask_loop {goal=loop, please} -> Tool failed: depth limit: a loop at depth 2 cannot delegate  [ERROR 0 ms]
       5  LLM   pass 2 -> Done[]  [OK 0 ms]
-    6  AGENT  ask_loop {goal=loop, please} -> Tool ask_loop ERROR: Tool failed: depth limit: a loop at depth 2 cannot delegate  [OK 4 ms]
+    6  AGENT  ask_loop {goal=loop, please} -> Tool ask_loop ERROR: Tool failed: depth limit: a loop at depth 2 cannot delegate  [OK 12 ms]
     7  LLM   pass 2 -> Done[]  [OK 0 ms]
-  8  AGENT  ask_loop {goal=loop, please} -> Tool ask_loop ERROR: Tool failed: depth limit: a loop at depth 2 cannot delegate  [OK 6 ms]
+  8  AGENT  ask_loop {goal=loop, please} -> Tool ask_loop ERROR: Tool failed: depth limit: a loop at depth 2 cannot delegate  [OK 21 ms]
   9  LLM   pass 2 -> Done[]  [OK 0 ms]
 answer: Tool ask_loop ERROR: Tool failed: depth limit: a loop at depth 2 cannot delegate
-done r-000b · 9 spans · 71 ms · DONE in harness.db · acked · handler calls: none
+done r-1e43 · 9 spans · 173 ms · DONE in harness.db · acked · handler calls: none
 ```
 </details>
 
