@@ -1,0 +1,2 @@
+{ "name": "ask_logistics", "description": "Shipment questions go to the logistics agent", "type": "agent",
+  "agent": "logistics", "inputField": "goal", "match": { "keywords": ["shipment", "shipping", "tracking"], "idPattern": "SHP-\\d+" } }

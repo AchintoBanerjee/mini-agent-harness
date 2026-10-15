@@ -99,23 +99,29 @@ class HttpApiTest {
         HttpResponse<String> list = get("/agents");
         assertEquals(200, list.statusCode());
         assertEquals("application/json; charset=utf-8", list.headers().firstValue("Content-Type").orElse(""));
-        assertEquals(List.of("chaos", "inventory", "support"), names(JSON.readTree(list.body())));
+        assertEquals(List.of("chaos", "concierge", "inventory", "logistics", "loop", "support"), names(JSON.readTree(list.body())));
 
         JsonNode support = JSON.readTree(get("/agents/support").body());
         assertEquals("Answers order, shipment and stock questions", support.get("description").asText());
         assertEquals(List.of("order_status", "shipping_status", "stock_status"), texts(support.get("tools")));
         assertEquals(5, support.get("maxPasses").asInt());
+        assertEquals(20, support.get("maxModelCalls").asInt());
 
         HttpResponse<String> missing = get("/agents/nope");
         assertEquals(404, missing.statusCode());
         assertEquals("no agent named nope", JSON.readTree(missing.body()).get("error").asText());
 
         JsonNode tools = JSON.readTree(get("/tools").body());
-        assertEquals(List.of("hang_forever", "order_status", "refund_order", "shipping_status", "stock_status", "throw_boom"), names(tools));
-        assertEquals("lookup", tools.get(1).get("type").asText());
-        assertEquals("orderId", tools.get(1).get("inputField").asText());
-        assertEquals("ORD-\\d+", tools.get(1).get("match").get("idPattern").asText());
-        assertFalse(tools.get(5).has("inputField"), "throw_boom takes no input");
+        assertEquals(List.of("ask_logistics", "ask_loop", "hang_forever", "order_status", "refund_order", "shipping_status",
+                "stock_status", "throw_boom"), names(tools));
+        assertEquals("agent", tools.get(0).get("type").asText());
+        assertEquals("logistics", tools.get(0).get("agent").asText(), "an agent tool names the agent it runs");
+        assertEquals("goal", tools.get(0).get("inputField").asText());
+        assertEquals("lookup", tools.get(3).get("type").asText());
+        assertEquals("orderId", tools.get(3).get("inputField").asText());
+        assertEquals("ORD-\\d+", tools.get(3).get("match").get("idPattern").asText());
+        assertFalse(tools.get(3).has("agent"), "a lookup is not an agent");
+        assertFalse(tools.get(7).has("inputField"), "throw_boom takes no input");
 
         assertEquals(404, get("/nothing").statusCode());
         assertEquals(405, send(HttpRequest.newBuilder(uri("/tools")).DELETE().build()).statusCode());
@@ -285,6 +291,33 @@ class HttpApiTest {
         List<Event> events = events(get("/turns/" + id + "/events").body());
         assertEquals(Arrays.asList("1", "2", "3", "4", null), events.stream().map(Event::id).toList(), "the stream reads the rows, whoever wrote them");
         assertEquals(ANSWER, JSON.readTree(events.getLast().data()).get("answer").asText());
+    }
+
+    @Test
+    void aConciergeTurnDelegatesToTheLogisticsAgentAndTheStreamShowsTheNestedSpans() throws Exception {
+        startWorker();
+        String id = JSON.readTree(post("/runs", "{\"agent\":\"concierge\",\"question\":\"Where is shipment SHP-1 for my order?\"}").body())
+                .get("turnId").asText();
+
+        JsonNode turn = awaitDone(id);
+        JsonNode spans = turn.get("spans");
+        assertEquals(List.of("LLM", "LLM", "TOOL", "LLM", "AGENT", "LLM"), spans.findValuesAsText("kind"));
+        assertEquals(List.of(1, 2, 3, 4, 5, 6), spans.findValues("span").stream().map(JsonNode::asInt).toList(), "one numbering, one turn");
+        assertEquals("ask_logistics", spans.get(0).get("attrs").get("tool").asText(), "the concierge delegates");
+        assertFalse(spans.get(0).get("attrs").has("depth"), "the parent's rows carry no depth");
+        for (int child : List.of(1, 2, 3)) {
+            assertEquals("1", spans.get(child).get("attrs").get("parent").asText(), "span " + spans.get(child).get("span") + " hangs under the delegating span");
+            assertEquals("1", spans.get(child).get("attrs").get("depth").asText());
+        }
+        assertEquals("shipping_status", spans.get(2).get("attrs").get("tool").asText(), "the child ran its own tool");
+        assertEquals("Shipment SHP-1: IN TRANSIT, arriving 2026-10-16", spans.get(4).get("response").asText(), "the AGENT row carries the child's answer");
+        assertEquals(id + "/1", spans.get(4).get("attrs").get("key").asText());
+        assertEquals("Shipment SHP-1: IN TRANSIT, arriving 2026-10-16", turn.get("answer").asText());
+
+        List<Event> events = events(get("/turns/" + id + "/events").body());
+        assertEquals(Arrays.asList("1", "2", "3", "4", "5", "6", null), events.stream().map(Event::id).toList(), "the stream sends the child's spans too");
+        assertEquals("1", JSON.readTree(events.get(2).data()).get("attrs").get("parent").asText());
+        assertEquals("AGENT", JSON.readTree(events.get(4).data()).get("kind").asText());
     }
 
     @Test

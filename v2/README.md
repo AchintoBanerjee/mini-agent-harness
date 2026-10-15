@@ -6,16 +6,18 @@ row and its queue message and answers with the id at once; a `worker` process ru
 writing every span to `harness.db` (SQLite) before acting on it; `GET /turns/{id}/events`
 streams the spans back as they land. A worker that dies loses its lease and the next worker
 resumes the turn from its last saved span. A runaway tool is cut off at the agent's timeout,
-independent tool calls run together, a repeated call inside a conversation is deduped, and a
-golden set scores the harness itself. The model is a stub (`RuleBasedLLM`): no network, no
-keys. The high-level design is `../docs/V2_HLD.md`; the queue, the lease and the dead worker
-are `../docs/DURABILITY.md`; the design write-up is `../DESIGN.md`.
+independent tool calls run together, a repeated call inside a conversation is deduped, an
+agent can be a tool (its loop runs inside the tool call, its rows nested in the same turn),
+and a golden set scores the harness itself. The model is a stub (`RuleBasedLLM`): no network,
+no keys. The high-level design is `../docs/V2_HLD.md`; the queue, the lease and the dead
+worker are `../docs/DURABILITY.md`; an agent as a tool is `../docs/SUBAGENTS.md`; the design
+write-up is `../DESIGN.md`.
 
 ## Build and test
 
 ```
 cd v2
-mvn -q test       # 94 tests, about 9 s with Maven's own start; tests use the in-memory store or a temp SQLite file
+mvn -q test       # 102 tests, about 10 s with Maven's own start; tests use the in-memory store or a temp SQLite file
 mvn -q compile    # classes to target/classes, Jackson and sqlite-jdbc (the two dependencies) to target/lib
 ```
 
@@ -25,8 +27,9 @@ Everything runs from `v2/`, where `agents/`, `tools/`, `evals/` and `harness.db`
 JDK 24+ put `--enable-native-access=ALL-UNNAMED` after `java`, or the SQLite driver's native
 load prints a warning; JDK 21 needs nothing. `../demo.sh` compiles v2 and runs the commands
 below in this order from an empty `harness.db`; `../docs/demo-output.txt` is its saved output
-(made on JDK 25, so the flag shows), and every block here is pasted from that file. Ids
-(`r-` or `c-` plus 4 hex), ports, pids and milliseconds vary from run to run; nothing else does.
+(made on JDK 25, so the flag shows). Every block here is pasted from a run of that script: the
+sub-agent blocks from the committed file, the others from the run before it. Ids (`r-` or `c-`
+plus 4 hex), ports, pids and milliseconds vary from run to run; nothing else does.
 
 ```
 java -cp "target/classes:target/lib/*" harness.cli.Main serve [--port 8080]
@@ -232,6 +235,67 @@ Product PRD-1: 42 units in stock
 done r-b722 · 5 spans · 368 ms · DONE in harness.db · acked · handler calls: order_status=1, stock_status=1
 ```
 
+### an agent as a tool: the concierge hands the shipment question to the logistics agent
+
+A tool of type `agent` names another agent. Its call runs that agent's own loop, the same
+`Orchestrator` class, inside the tool call: the goal is the child's question, the child's tools
+are its own agent's, its rows go into the same turn with `parent` (the span that delegated) and
+`depth` in `attrs`, and only its answer comes back, as the parent's `AGENT` row. The depth is
+capped at 2 and one budget of model calls (`maxModelCalls` on the agent file, default 20) is
+shared by parent and children. The whole section is `../docs/SUBAGENTS.md`.
+
+```
+$ curl -s -X POST http://localhost:65286/runs -d '{"agent":"concierge","question":"Where is shipment SHP-1 for my order?"}'
+{
+  "turnId" : "r-2bb0",
+  "jobId" : "r-2bb0",
+  "conversationId" : "c-1e17",
+  "status" : "QUEUED"
+}
+$ java --enable-native-access=ALL-UNNAMED -cp "target/classes:target/lib/*" harness.cli.Main worker --once
+worker pid 34457 · lease 2000 ms · once · harness.db
+received r-2bb0: attempt 1 · agent concierge · "Where is shipment SHP-1 for my order?"
+  1  LLM   pass 1 -> ToolCall[toolName=ask_logistics, input={goal=Where is shipment SHP-1 for my order?}]  [OK 4 ms]
+    2  LLM   pass 1 -> ToolCall[toolName=shipping_status, input={shipmentId=SHP-1}]  [OK 0 ms]
+    3  TOOL  shipping_status {shipmentId=SHP-1} -> Shipment SHP-1: IN TRANSIT, arriving 2026-10-16  [OK 0 ms]
+    4  LLM   pass 2 -> Done[]  [OK 0 ms]
+  5  AGENT  ask_logistics {goal=Where is shipment SHP-1 for my order?} -> Shipment SHP-1: IN TRANSIT, arriving 2026-10-16  [OK 5 ms]
+  6  LLM   pass 2 -> Done[]  [OK 0 ms]
+answer: Shipment SHP-1: IN TRANSIT, arriving 2026-10-16
+done r-2bb0 · 6 spans · 71 ms · DONE in harness.db · acked · handler calls: shipping_status=1
+```
+
+The child's rows are indented; `GET /turns/r-2bb0` shows the same six spans, the child's with
+`"parent" : "1"` and `"depth" : "1"` in `attrs` (`demo-output.txt`). An agent that lists itself as
+a tool (`loop`, tool `ask_loop`) goes three loops deep and no further:
+
+```
+$ curl -s -X POST http://localhost:65286/runs -d '{"agent":"loop","question":"loop, please"}'
+{
+  "turnId" : "r-000b",
+  "jobId" : "r-000b",
+  "conversationId" : "c-58b7",
+  "status" : "QUEUED"
+}
+$ java --enable-native-access=ALL-UNNAMED -cp "target/classes:target/lib/*" harness.cli.Main worker --once
+worker pid 34465 · lease 2000 ms · once · harness.db
+received r-000b: attempt 1 · agent loop · "loop, please"
+  1  LLM   pass 1 -> ToolCall[toolName=ask_loop, input={goal=loop, please}]  [OK 4 ms]
+    2  LLM   pass 1 -> ToolCall[toolName=ask_loop, input={goal=loop, please}]  [OK 0 ms]
+      3  LLM   pass 1 -> ToolCall[toolName=ask_loop, input={goal=loop, please}]  [OK 0 ms]
+      4  AGENT  ask_loop {goal=loop, please} -> Tool failed: depth limit: a loop at depth 2 cannot delegate  [ERROR 0 ms]
+      5  LLM   pass 2 -> Done[]  [OK 0 ms]
+    6  AGENT  ask_loop {goal=loop, please} -> Tool ask_loop ERROR: Tool failed: depth limit: a loop at depth 2 cannot delegate  [OK 4 ms]
+    7  LLM   pass 2 -> Done[]  [OK 0 ms]
+  8  AGENT  ask_loop {goal=loop, please} -> Tool ask_loop ERROR: Tool failed: depth limit: a loop at depth 2 cannot delegate  [OK 6 ms]
+  9  LLM   pass 2 -> Done[]  [OK 0 ms]
+answer: Tool ask_loop ERROR: Tool failed: depth limit: a loop at depth 2 cannot delegate
+done r-000b · 9 spans · 71 ms · DONE in harness.db · acked · handler calls: none
+```
+
+A turn that spends its budget of model calls ends `FAILED` with a NOTE row `budget exhausted`
+(`SubAgentTest`).
+
 ### durability: `submit`, a worker that dies, the next worker resumes
 
 A turn is a message on the `queue` table with the three calls of SQS (Amazon's Simple Queue
@@ -307,7 +371,7 @@ java -cp "target/classes:target/lib/*" harness.cli.Main replay <turnId> [fromSpa
 ```
 
 `submit` queues one turn without HTTP (above). `eval` prints the table `POST /evals` returns.
-`replay` prints a turn's stored spans from that number on:
+`replay` prints a turn's stored spans from that number on, a child loop's indented:
 
 ```
 $ java --enable-native-access=ALL-UNNAMED -cp "target/classes:target/lib/*" harness.cli.Main replay r-5a9e
@@ -315,14 +379,22 @@ $ java --enable-native-access=ALL-UNNAMED -cp "target/classes:target/lib/*" harn
   2  TOOL  order_status {orderId=ORD-1} -> Order ORD-1: SHIPPED, shipment SHP-1  [OK 0 ms]
   3  NOTE  resumed from step 2  [OK 0 ms]
   4  LLM   pass 2 -> Done[]  [OK 1 ms]
+$ java --enable-native-access=ALL-UNNAMED -cp "target/classes:target/lib/*" harness.cli.Main replay r-2bb0
+  1  LLM   pass 1 -> ToolCall[toolName=ask_logistics, input={goal=Where is shipment SHP-1 for my order?}]  [OK 4 ms]
+    2  LLM   pass 1 -> ToolCall[toolName=shipping_status, input={shipmentId=SHP-1}]  [OK 0 ms]
+    3  TOOL  shipping_status {shipmentId=SHP-1} -> Shipment SHP-1: IN TRANSIT, arriving 2026-10-16  [OK 0 ms]
+    4  LLM   pass 2 -> Done[]  [OK 0 ms]
+  5  AGENT  ask_logistics {goal=Where is shipment SHP-1 for my order?} -> Shipment SHP-1: IN TRANSIT, arriving 2026-10-16  [OK 5 ms]
+  6  LLM   pass 2 -> Done[]  [OK 0 ms]
 ```
 
 ## Agents and tools are data
 
-An agent is a file in `agents/`: its name, the tools it may call, its pass cap and its per-call
-timeout. A tool it does not list is `DENIED` before it runs (`refund_order` is registered and
-listed by no agent for exactly that case). A builder that writes such files would be its own
-service in front of this metadata; there is no endpoint for it here.
+An agent is a file in `agents/`: its name, the tools it may call, its pass cap, its per-call
+timeout and, if it says so, `maxModelCalls` (default 20), the model calls one turn may spend,
+children included. A tool it does not list is `DENIED` before it runs (`refund_order` is
+registered and listed by no agent for exactly that case). A builder that writes such files
+would be its own service in front of this metadata; there is no endpoint for it here.
 
 ```json
 { "name": "support", "description": "Answers order, shipment and stock questions",
@@ -331,8 +403,9 @@ service in front of this metadata; there is no endpoint for it here.
 
 A tool is a file in `tools/`; `type` picks the adapter in `ToolLoader` (`lookup`: a static map
 keyed by the id the question mentions; `sleep`: an interruptible sleep of `ms`; `fail`: throws
-`message`). Adding a tool is adding a file; the `match` block is what the stub model uses to
-pick it.
+`message`; `agent`: another agent, named by `agent` and read from `agents/`, run as a tool by
+the loop that offers it, with the whole question as its `goal`). Adding a tool is adding a file;
+the `match` block is what the stub model uses to pick it.
 
 ```json
 { "name": "order_status", "description": "Status of an order, by order id", "type": "lookup",
@@ -360,7 +433,7 @@ queue. A file from before these tables (`job`, `step`) is refused with a message
 ```
 agents/*.json  tools/*.json  evals/golden.json  harness.db (gitignored)
 src/main/java/harness/
-  core/    Orchestrator, Conversation, Turn, Span, Context, Summarizer, RelaySummarizer, RunListener, ConsoleListener, CrashAfter
+  core/    Orchestrator, TurnBudget, Conversation, Turn, Span, Context, Summarizer, RelaySummarizer, RunListener, ConsoleListener, CrashAfter
   model/   LLMProxy, RuleBasedLLM, ModelReply, ToolCall, ToolCalls, Done
   tools/   Tool, ToolRegistry, ToolCaller, ToolResult, MatchingCondition, ToolLoader
   agent/   Agent, AgentLoader

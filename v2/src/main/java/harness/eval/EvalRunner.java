@@ -55,7 +55,8 @@ public class EvalRunner {
         for (Agent agent : agents) {
             if (agent.name().equals(golden.agent())) {
                 int maxPasses = golden.maxPasses() > 0 ? golden.maxPasses() : agent.maxPasses();
-                return new Agent(agent.name(), agent.description(), agent.toolNames(), maxPasses, agent.toolTimeoutMs());
+                return new Agent(agent.name(), agent.description(), agent.toolNames(), maxPasses, agent.toolTimeoutMs(),
+                        agent.maxModelCalls());
             }
         }
         throw new IllegalArgumentException("no agent named " + golden.agent() + " for \"" + golden.question() + "\"");

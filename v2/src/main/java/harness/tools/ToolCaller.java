@@ -4,7 +4,9 @@ import harness.core.Span;
 import harness.model.ToolCall;
 import java.time.Duration;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.ExecutionException;
@@ -30,6 +32,7 @@ public class ToolCaller {
     private final Set<String> allowed;
     private final Duration timeout;
     private final ExecutorService executor = Executors.newVirtualThreadPerTaskExecutor();
+    private Map<String, Tool> bound = Map.of();
 
     /** Every registered tool allowed, the default timeout: for tests and embedding. */
     public ToolCaller(ToolRegistry registry) {
@@ -41,6 +44,19 @@ public class ToolCaller {
         this.registry = registry;
         this.allowed = Set.copyOf(allowedToolNames);
         this.timeout = timeout;
+    }
+
+    /**
+     * The tools as the loop offers them, looked up before the registry: an agent tool is
+     * bound to the loop that offers it, so its call runs that loop's child. Everything else
+     * is the registry's copy either way.
+     */
+    public void bind(List<Tool> tools) {
+        Map<String, Tool> byName = new HashMap<>();
+        for (Tool tool : tools) {
+            byName.put(tool.name(), tool);
+        }
+        bound = byName;
     }
 
     public ToolResult call(ToolCall call) {
@@ -63,7 +79,7 @@ public class ToolCaller {
 
     /** On the executor: gate the call, run the handler, time it. Never throws. */
     private ToolResult run(ToolCall call) {
-        Optional<Tool> tool = registry.find(call.toolName());
+        Optional<Tool> tool = Optional.ofNullable(bound.get(call.toolName())).or(() -> registry.find(call.toolName()));
         if (tool.isEmpty()) {
             return new ToolResult("Unknown tool: " + call.toolName(), Span.Status.ERROR, 0);
         }

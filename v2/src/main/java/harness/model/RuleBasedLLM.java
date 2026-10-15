@@ -9,16 +9,18 @@ import java.util.Map;
 import java.util.Optional;
 
 /**
- * Stub model. If a tool already ran in this turn it says Done. Otherwise every tool whose
- * matching condition fits the question is called: one as a ToolCall, several as one
- * ToolCalls batch in the agent's tool order. No match means Done.
+ * Stub model. If a tool (or an agent run as one) already ran in this turn it says Done.
+ * Otherwise every tool whose matching condition fits the question is called: one as a
+ * ToolCall, several as one ToolCalls batch in the agent's tool order. An agent tool gets the
+ * whole question as its goal, where a tool gets the id the question mentions. No match
+ * means Done.
  */
 public class RuleBasedLLM implements LLMProxy {
 
     @Override
     public ModelReply next(Context context, List<Tool> tools) {
         for (Span span : context.spans()) {
-            if (span.kind() == Span.Kind.TOOL) {
+            if (span.kind().isCall()) {
                 return new Done();
             }
         }
@@ -26,7 +28,8 @@ public class RuleBasedLLM implements LLMProxy {
         for (Tool tool : tools) {
             Optional<String> id = tool.matching().match(context.question());
             if (id.isPresent()) {
-                Map<String, String> input = tool.inputField() == null ? Map.of() : Map.of(tool.inputField(), id.get());
+                String value = tool.isAgent() ? context.question() : id.get();
+                Map<String, String> input = tool.inputField() == null ? Map.of() : Map.of(tool.inputField(), value);
                 calls.add(new ToolCall(tool.name(), input));
             }
         }

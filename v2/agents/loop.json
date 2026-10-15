@@ -1,0 +1,2 @@
+{ "name": "loop", "description": "Lists itself as a tool: delegates to itself until the depth cap stops it",
+  "tools": ["ask_loop"], "maxPasses": 3, "toolTimeoutMs": 2000 }

@@ -130,6 +130,25 @@ echo "(--slow gives every lookup 300 ms of simulated latency; two lookups in one
 must worker --once --slow
 curl_show -s "$base/turns/$parallel_id"
 
+header "sub-agents: an agent as a tool; the concierge hands the shipment question to the logistics agent"
+echo "(ask_logistics is a tool of type agent: its call runs the logistics agent's own loop inside the tool call, in the same turn, and only the answer comes back)"
+ticket=$(curl_show -s -X POST "$base/runs" -d '{"agent":"concierge","question":"Where is shipment SHP-1 for my order?"}')
+printf '%s\n' "$ticket"
+sub_id=$(turn_id_of "$ticket")
+if [ -z "$sub_id" ]; then echo "no turn id in the POST reply"; exit 1; fi
+echo "(the worker prints the child's rows indented: the parent's decision, the child's three rows, the AGENT row with the child's answer, the parent's done)"
+must worker --once
+echo "(the same rows over HTTP: the child's spans carry parent and depth in attrs, the AGENT span carries the child's answer, and the turn's answer is that answer)"
+curl_show -s "$base/turns/$sub_id"
+
+header "sub-agents: the depth cap; an agent that lists itself as a tool"
+ticket=$(curl_show -s -X POST "$base/runs" -d '{"agent":"loop","question":"loop, please"}')
+printf '%s\n' "$ticket"
+loop_id=$(turn_id_of "$ticket")
+if [ -z "$loop_id" ]; then echo "no turn id in the POST reply"; exit 1; fi
+echo "(loop delegates to loop delegates to loop; the loop at depth 2 may not delegate again, so its call is refused with an ERROR row, depth limit, and the answer climbs back up)"
+must worker --once
+
 header "durability: the queue, the lease, the dead worker"
 echo "(submit writes the turn row QUEUED and its queue message without HTTP, and comes back with the id:)"
 sub_out=$(harness submit --agent support "What is the status of order ORD-1?")
@@ -163,8 +182,9 @@ rm -f "$server_log"
 echo "(server stopped)"
 
 header "the CLI that remains: serve, worker, submit, eval, replay"
-echo "(serve, worker and submit ran above; replay prints a turn's stored rows; eval prints the table POST /evals returns)"
+echo "(serve, worker and submit ran above; replay prints a turn's stored rows, a child loop's indented; eval prints the table POST /evals returns)"
 must replay "$dur_id"
+must replay "$sub_id"
 must eval
 
 printf '\ndemo complete\n'

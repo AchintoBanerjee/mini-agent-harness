@@ -26,10 +26,20 @@ class AgentLoaderTest {
     void theFolderLoadsEveryAgentInFileNameOrder() {
         List<Agent> agents = AgentLoader.loadAll(AGENTS);
 
-        assertEquals(List.of("chaos", "inventory", "support"), agents.stream().map(Agent::name).toList());
-        assertEquals(List.of("stock_status"), agents.get(1).toolNames());
-        assertEquals(2, agents.get(1).maxPasses());
+        assertEquals(List.of("chaos", "concierge", "inventory", "logistics", "loop", "support"), agents.stream().map(Agent::name).toList());
+        assertEquals(List.of("stock_status"), agents.get(2).toolNames());
+        assertEquals(2, agents.get(2).maxPasses());
         assertEquals(1000, agents.get(0).toolTimeoutMs());
+        assertEquals(Agent.DEFAULT_MAX_MODEL_CALLS, agents.get(0).maxModelCalls(), "no maxModelCalls in the file: the default");
+    }
+
+    @Test
+    void maxModelCallsIsReadWhenTheFileSetsIt(@TempDir Path dir) throws Exception {
+        Path file = dir.resolve("thrifty.json");
+        Files.writeString(file, "{ \"name\": \"thrifty\", \"description\": \"three model calls\", \"tools\": [], \"maxPasses\": 5,"
+                + " \"toolTimeoutMs\": 1, \"maxModelCalls\": 3 }");
+
+        assertEquals(3, AgentLoader.load(file).maxModelCalls());
     }
 
     @Test

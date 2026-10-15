@@ -3,10 +3,11 @@ package harness.core;
 import java.util.Map;
 
 /**
- * One recorded step of a turn: a model call, a tool call, or a note from the loop itself.
- * turnId is the turn (job id) the row belongs to; span is its number, counting up through
- * the conversation so a later turn can point at an earlier turn's row. Later steps add keys
- * to attrs, never new fields.
+ * One recorded step of a turn: a model call, a tool call, another agent's answer, or a note
+ * from the loop itself. turnId is the turn (job id) the row belongs to; span is its number,
+ * counting up through the conversation so a later turn can point at an earlier turn's row.
+ * A child loop's rows sit in the same turn and say so in attrs: parent (the span that
+ * delegated) and depth. Later steps add keys to attrs, never new fields.
  */
 public record Span(
         String turnId,
@@ -19,7 +20,14 @@ public record Span(
         long ms,
         Map<String, String> attrs) {
 
-    public enum Kind { LLM, TOOL, NOTE }
+    public enum Kind {
+        LLM, TOOL, NOTE, AGENT;
+
+        /** A call the loop ran: a tool, or another agent run as one. */
+        public boolean isCall() {
+            return this == TOOL || this == AGENT;
+        }
+    }
 
     public enum Status { OK, ERROR, TIMEOUT, DENIED, DEDUPED, CUT_SHORT }
 

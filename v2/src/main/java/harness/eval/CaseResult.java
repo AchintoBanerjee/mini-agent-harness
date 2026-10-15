@@ -29,7 +29,7 @@ public record CaseResult(GoldenCase golden, Set<String> tools, boolean toolChoic
             if (row.status() == Span.Status.CUT_SHORT) {
                 stoppedByDone = false;
             }
-            if (row.kind() != Span.Kind.TOOL || row.status() == Span.Status.DEDUPED) {
+            if (!row.kind().isCall() || row.status() == Span.Status.DEDUPED) {
                 continue;
             }
             tools.add(row.attrs().getOrDefault("tool", "?"));

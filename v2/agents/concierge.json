@@ -1,0 +1,2 @@
+{ "name": "concierge", "description": "Answers order questions itself and hands shipment questions to the logistics agent",
+  "tools": ["order_status", "ask_logistics"], "maxPasses": 5, "toolTimeoutMs": 2000 }

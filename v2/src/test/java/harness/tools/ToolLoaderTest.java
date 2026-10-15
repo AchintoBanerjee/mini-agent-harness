@@ -6,6 +6,7 @@ import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import harness.core.Span;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
@@ -21,8 +22,35 @@ class ToolLoaderTest {
     void theFolderBecomesARegistryWithEveryToolByName() {
         ToolRegistry registry = ToolLoader.load(TOOLS);
 
-        assertEquals(List.of("hang_forever", "order_status", "refund_order", "shipping_status", "stock_status", "throw_boom"),
-                registry.all().stream().map(Tool::name).toList());
+        assertEquals(List.of("ask_logistics", "ask_loop", "hang_forever", "order_status", "refund_order", "shipping_status",
+                "stock_status", "throw_boom"), registry.all().stream().map(Tool::name).toList());
+    }
+
+    @Test
+    void agentToolNamesTheAgentFromTheFolderNextDoorAndRunsOnlyInsideATurn() {
+        Tool tool = ToolLoader.loadOne(TOOLS.resolve("ask_logistics.json"));
+
+        assertEquals("agent", tool.type());
+        assertTrue(tool.isAgent());
+        assertEquals("logistics", tool.agent().name());
+        assertEquals(List.of("shipping_status"), tool.agent().toolNames(), "the child agent's own tool list, from agents/logistics.json");
+        assertEquals("goal", tool.inputField());
+        assertEquals(Span.Kind.AGENT, tool.kind());
+        assertEquals("SHP-1", tool.matching().match("where is shipment SHP-1").orElseThrow(), "the stub picks it like any tool");
+        IllegalStateException thrown = assertThrows(IllegalStateException.class, () -> tool.run(Map.of("goal", "anything")));
+        assertTrue(thrown.getMessage().contains("runs only inside a turn"), thrown.getMessage());
+        assertFalse(ToolLoader.loadOne(TOOLS.resolve("order_status.json")).isAgent());
+    }
+
+    @Test
+    void agentToolWithNoAgentFileIsRejectedByFileName(@TempDir Path dir) throws Exception {
+        Path file = dir.resolve("ask_nobody.json");
+        Files.writeString(file, "{ \"name\": \"ask_nobody\", \"description\": \"?\", \"type\": \"agent\", \"agent\": \"nobody\", \"match\": { \"keywords\": [] } }");
+
+        IllegalArgumentException thrown = assertThrows(IllegalArgumentException.class, () -> ToolLoader.loadOne(file));
+        assertTrue(thrown.getMessage().contains("ask_nobody.json"), thrown.getMessage());
+        assertTrue(thrown.getMessage().contains("no agent file"), thrown.getMessage());
+        assertTrue(thrown.getMessage().contains("nobody.json"), thrown.getMessage());
     }
 
     @Test

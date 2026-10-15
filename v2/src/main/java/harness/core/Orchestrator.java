@@ -11,6 +11,7 @@ import harness.tools.Tool;
 import harness.tools.ToolCaller;
 import harness.tools.ToolRegistry;
 import harness.tools.ToolResult;
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -30,6 +31,13 @@ import java.util.function.Supplier;
  * conversation is not run again but recorded as DEDUPED, pointing at the span it repeats.
  * The turn row follows the loop: RUNNING while it runs, DONE with the answer when it ends,
  * FAILED if it threw.
+ *
+ * An agent can be a tool. A tool of type agent is bound to the loop that offers it, and its
+ * call runs a child loop of this same class for that agent, inside the tool call: the goal
+ * is the child's question, the child's tools are its own agent's. The child writes its rows
+ * into the same turn, each marked with the parent span and its depth; only its answer comes
+ * back, as the parent's AGENT row. The depth is capped and one budget of model calls is
+ * shared down the tree, both bounds in the loop, not in the prompt.
  */
 public class Orchestrator {
 
@@ -38,6 +46,12 @@ public class Orchestrator {
     static final String TOOL = "tool";
     static final String KEY = "key";
     static final String REF = "ref";
+    /** On a child loop's rows: the parent's span that delegated, and how deep the child runs. */
+    static final String PARENT = "parent";
+    static final String DEPTH = "depth";
+
+    /** The deepest a child may run; a loop at this depth cannot delegate again. Never a stack overflow. */
+    public static final int MAX_DEPTH = 2;
 
     private final Agent agent;
     private final ToolRegistry registry;
@@ -47,8 +61,11 @@ public class Orchestrator {
     private final Summarizer summarizer;
     private final RunStore store;
     private final RunListener listener;
+    private final int depth;
+    private final int parentSpan;
+    private final TurnBudget budget;
     private Conversation conversation;
-    private int steps = 0;
+    private int lastSpan;
 
     /** In-memory store and no listener: for tests and embedding. */
     public Orchestrator(Agent agent, ToolRegistry registry, LLMProxy llm,
@@ -56,11 +73,24 @@ public class Orchestrator {
         this(agent, registry, llm, toolCaller, summarizer, new InMemoryRunStore(), span -> { });
     }
 
+    /** The turn's own loop: depth 0, a fresh budget of the agent's maxModelCalls. */
     public Orchestrator(Agent agent, ToolRegistry registry, LLMProxy llm, ToolCaller toolCaller,
                         Summarizer summarizer, RunStore store, RunListener listener) {
+        this(agent, registry, llm, toolCaller, summarizer, store, listener, 0, 0, new TurnBudget(agent.maxModelCalls()));
+    }
+
+    /**
+     * A loop at a depth in the tree: 0 is the turn's own; a child gets depth + 1, the span of
+     * the parent that delegated, and the parent's budget. An agent tool in the agent's list is
+     * bound to this loop, and the caller runs the bound copy.
+     */
+    public Orchestrator(Agent agent, ToolRegistry registry, LLMProxy llm, ToolCaller toolCaller, Summarizer summarizer,
+                        RunStore store, RunListener listener, int depth, int parentSpan, TurnBudget budget) {
         for (String name : agent.toolNames()) {
-            tools.add(registry.require(name));
+            Tool tool = registry.require(name);
+            tools.add(tool.isAgent() ? tool.bound(input -> delegate(tool.agent(), input.getOrDefault(tool.inputField(), ""))) : tool);
         }
+        toolCaller.bind(tools);
         this.agent = agent;
         this.registry = registry;
         this.llm = llm;
@@ -68,6 +98,9 @@ public class Orchestrator {
         this.summarizer = summarizer;
         this.store = store;
         this.listener = listener;
+        this.depth = depth;
+        this.parentSpan = parentSpan;
+        this.budget = budget;
     }
 
     /** A question in this process: the first one opens the conversation, each one is a turn of its own. */
@@ -118,6 +151,39 @@ public class Orchestrator {
         return conversation;
     }
 
+    /** The model calls this turn has made so far, parent and children together. */
+    public TurnBudget budget() {
+        return budget;
+    }
+
+    /**
+     * The adapter behind an agent tool: the call runs a child loop of this class for that
+     * agent, with the goal as its question and its own agent's tools and timeout, and the
+     * child's answer comes back as the tool result. The child shares the turn, the listener,
+     * the store, the model and the budget; it gets this loop's last span as its parent.
+     */
+    private String delegate(Agent child, String goal) {
+        if (depth >= MAX_DEPTH) {
+            throw new IllegalStateException("depth limit: a loop at depth " + depth + " cannot delegate");
+        }
+        Turn turn = conversation.turns().getLast();
+        ToolCaller childCaller = new ToolCaller(registry, child.toolNames(), Duration.ofMillis(child.toolTimeoutMs()));
+        Orchestrator childLoop = new Orchestrator(child, registry, llm, childCaller, summarizer, store, listener,
+                depth + 1, lastSpan, budget);
+        return childLoop.asChild(conversation.id(), turn.id(), goal);
+    }
+
+    /**
+     * The child's side: the goal is its question, in a turn that shares the parent's id, so
+     * its rows land in the parent's turn; no row of its own, no status change. It sees
+     * nothing of the parent: not the question, not the rows, not the conversation's history.
+     */
+    String asChild(String conversationId, String turnId, String goal) {
+        conversation = new Conversation(conversationId, agent);
+        Turn turn = conversation.turn(turnId, goal);
+        return loop(turn, 1);
+    }
+
     /** Loads the turn's conversation from the store, up to the turn itself, and continues the span numbering. */
     private Turn open(String turnId) {
         if (conversation != null) {
@@ -126,7 +192,7 @@ public class Orchestrator {
         conversation = Conversation.load(store, store.turn(turnId).conversationId(), agent, turnId);
         for (Turn earlier : conversation.turns()) {
             for (Span row : earlier.spans()) {
-                steps = Math.max(steps, row.span());
+                budget.spansAtLeast(row.span());
             }
         }
         return conversation.turns().getLast();
@@ -157,7 +223,7 @@ public class Orchestrator {
             if (row.kind() == Span.Kind.LLM) {
                 decided = row;
                 toolRowsAfter = 0;
-            } else if (row.kind() == Span.Kind.TOOL) {
+            } else if (row.kind().isCall()) {
                 toolRowsAfter++;
             }
         }
@@ -168,10 +234,16 @@ public class Orchestrator {
         return loop(turn, decided.pass() + 1);
     }
 
-    /** Ask, run, repeat from the given pass until Done or the cap. */
+    /** Ask, run, repeat from the given pass until Done or the cap. Every model call draws on the turn's budget. */
     private String loop(Turn turn, int fromPass) {
         int maxPasses = agent.maxPasses();
         for (int pass = fromPass; pass <= maxPasses; pass++) {
+            if (!budget.takeModelCall()) {
+                record(turn, pass, Span.Kind.NOTE, "budget exhausted: " + budget.maxModelCalls() + " model calls for this turn", "",
+                        Span.Status.ERROR, 0, Map.of());
+                throw new IllegalStateException("budget exhausted: " + budget.maxModelCalls()
+                        + " model calls for this turn, parent and children together");
+            }
             long started = System.nanoTime();
             ModelReply reply = llm.next(context(turn), tools);
             List<ToolCall> calls = reply.calls();
@@ -181,7 +253,7 @@ public class Orchestrator {
             if (calls.isEmpty()) {
                 return finish(turn);
             }
-            runCalls(turn, pass, calls, steps);
+            runCalls(turn, pass, calls, lastSpan);
         }
 
         record(turn, maxPasses, Span.Kind.NOTE, "cut short at maxPasses=" + maxPasses, "",
@@ -202,10 +274,10 @@ public class Orchestrator {
     }
 
     /**
-     * Runs the calls (together when several) and records one TOOL row each, in request
-     * order, with that call's own time; a batch also leaves a NOTE row: wall against work.
-     * A call whose tool and input already ran OK in this conversation does not run: its
-     * row is DEDUPED and points at the span it repeats.
+     * Runs the calls (together when several) and records one row each, in request order,
+     * with that call's own time: TOOL for a tool, AGENT for an agent run as one; a batch
+     * also leaves a NOTE row: wall against work. A call whose tool and input already ran OK
+     * in this conversation does not run: its row is DEDUPED and points at the span it repeats.
      */
     private void runCalls(Turn turn, int pass, List<ToolCall> calls, int decidingStep) {
         List<Span> repeats = new ArrayList<>();
@@ -236,7 +308,7 @@ public class Orchestrator {
                 result = results.get(next++);
                 work += result.ms();
             }
-            record(turn, pass, Span.Kind.TOOL, call.toolName() + " " + call.input(),
+            record(turn, pass, kindOf(call), call.toolName() + " " + call.input(),
                     result.output(), result.status(), result.ms(), attrs);
         }
         if (fresh.size() > 1) {
@@ -245,11 +317,16 @@ public class Orchestrator {
         }
     }
 
-    /** The first OK TOOL row of this conversation that ran the same tool on the same input, or null. */
+    /** The row a call leaves: TOOL, or AGENT when the tool is another agent. */
+    private Span.Kind kindOf(ToolCall call) {
+        return registry.find(call.toolName()).map(Tool::kind).orElse(Span.Kind.TOOL);
+    }
+
+    /** The first OK call row of this conversation that ran the same tool on the same input, or null. */
     private Span earlierOk(ToolCall call) {
         for (Turn earlier : conversation.turns()) {
             for (Span row : earlier.spans()) {
-                if (row.kind() == Span.Kind.TOOL && row.status() == Span.Status.OK
+                if (row.kind().isCall() && row.status() == Span.Status.OK
                         && call.toolName().equals(row.attrs().get(TOOL))
                         && row.attrs().entrySet().containsAll(call.input().entrySet())) {
                     return row;
@@ -281,11 +358,21 @@ public class Orchestrator {
         return calls;
     }
 
-    /** Write, then act: the row is in the store and announced before the loop takes its next step. */
+    /**
+     * Write, then act: the row is in the store and announced before the loop takes its next
+     * step. The number comes from the turn's budget, so a child's rows slot in after the
+     * parent's; a child's row also says which span delegated and how deep it runs.
+     */
     private void record(Turn turn, int pass, Span.Kind kind, String request,
                         String response, Span.Status status, long ms, Map<String, String> attrs) {
-        steps++;
-        Span span = new Span(turn.id(), steps, pass, kind, request, response, status, ms, attrs);
+        lastSpan = budget.nextSpan();
+        if (depth > 0) {
+            Map<String, String> marked = new LinkedHashMap<>(attrs);
+            marked.put(PARENT, String.valueOf(parentSpan));
+            marked.put(DEPTH, String.valueOf(depth));
+            attrs = marked;
+        }
+        Span span = new Span(turn.id(), lastSpan, pass, kind, request, response, status, ms, attrs);
         turn.spans().add(span);
         store.append(turn.id(), span);
         listener.on(span);

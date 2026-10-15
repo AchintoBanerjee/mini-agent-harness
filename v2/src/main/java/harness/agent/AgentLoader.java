@@ -46,7 +46,8 @@ public class AgentLoader {
                 required(node, "description", source).asText(),
                 List.copyOf(toolNames),
                 required(node, "maxPasses", source).asInt(),
-                required(node, "toolTimeoutMs", source).asLong());
+                required(node, "toolTimeoutMs", source).asLong(),
+                node.has("maxModelCalls") ? node.get("maxModelCalls").asInt() : Agent.DEFAULT_MAX_MODEL_CALLS);
     }
 
     private static JsonNode required(JsonNode node, String field, String source) {

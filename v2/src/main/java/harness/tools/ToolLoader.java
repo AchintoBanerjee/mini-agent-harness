@@ -2,6 +2,8 @@ package harness.tools;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import harness.agent.Agent;
+import harness.agent.AgentLoader;
 import java.io.IOException;
 import java.io.UncheckedIOException;
 import java.nio.file.DirectoryStream;
@@ -19,8 +21,9 @@ import java.util.regex.Pattern;
 
 /**
  * Reads tools/*.json. A tool is data: the "type" field picks the adapter that builds its
- * handler (lookup: a static map; sleep: an interruptible sleep; fail: throws). Adding a
- * tool means adding a file.
+ * handler (lookup: a static map; sleep: an interruptible sleep; fail: throws; agent:
+ * another agent, named by "agent" and read from agents/, run as a tool by the loop that
+ * offers it). Adding a tool means adding a file.
  */
 public class ToolLoader {
 
@@ -74,10 +77,30 @@ public class ToolLoader {
             handler = sleep(required(node, "ms", file).asLong());
         } else if (type.equals("fail")) {
             handler = fail(required(node, "message", file).asText());
+        } else if (type.equals("agent")) {
+            return new Tool(name, description, type, inputField == null ? "goal" : inputField, matching,
+                    childAgent(node, file), notInsideATurn(name));
         } else {
             throw new IllegalArgumentException(file + ": unknown tool type \"" + type + "\"");
         }
         return new Tool(name, description, type, inputField, matching, handler);
+    }
+
+    /** The agent an agent tool calls, read from the agents/ folder next to the tools/ folder. */
+    private static Agent childAgent(JsonNode node, Path file) {
+        String agentName = required(node, "agent", file).asText();
+        Path agentFile = file.toAbsolutePath().getParent().resolveSibling("agents").resolve(agentName + ".json");
+        if (!Files.exists(agentFile)) {
+            throw new IllegalArgumentException(file + ": no agent file " + agentFile + " for \"" + agentName + "\"");
+        }
+        return AgentLoader.load(agentFile);
+    }
+
+    /** An agent tool's handler before a loop binds it: there is no child loop to run outside a turn. */
+    private static Function<Map<String, String>, String> notInsideATurn(String name) {
+        return input -> {
+            throw new IllegalStateException(name + " is an agent tool: it runs only inside a turn, bound by the loop that offers it");
+        };
     }
 
     private static MatchingCondition matching(JsonNode node) {

@@ -153,6 +153,9 @@ public class HttpApi {
         for (Tool tool : ToolLoader.load(toolsDir).all()) {
             ObjectNode node = list.addObject().put("name", tool.name()).put("type", tool.type())
                     .put("description", tool.description());
+            if (tool.isAgent()) {
+                node.put("agent", tool.agent().name());
+            }
             if (tool.inputField() != null) {
                 node.put("inputField", tool.inputField());
             }
@@ -303,14 +306,15 @@ public class HttpApi {
         return AgentLoader.loadAll(agentsDir).stream().filter(agent -> agent.name().equals(name)).findFirst();
     }
 
-    /** The agent the way its file says it: name, description, tools, maxPasses, toolTimeoutMs. */
+    /** The agent the way its file says it: name, description, tools, maxPasses, toolTimeoutMs, maxModelCalls. */
     private static ObjectNode agentJson(Agent agent) {
         ObjectNode node = JSON.createObjectNode().put("name", agent.name()).put("description", agent.description());
         ArrayNode tools = node.putArray("tools");
         for (String tool : agent.toolNames()) {
             tools.add(tool);
         }
-        return node.put("maxPasses", agent.maxPasses()).put("toolTimeoutMs", agent.toolTimeoutMs());
+        return node.put("maxPasses", agent.maxPasses()).put("toolTimeoutMs", agent.toolTimeoutMs())
+                .put("maxModelCalls", agent.maxModelCalls());
     }
 
     private static JsonNode readJson(HttpExchange exchange) throws IOException {

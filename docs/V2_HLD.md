@@ -30,7 +30,7 @@ Three tables, from the whiteboard: a conversation has turns, a turn is one job, 
 |---|---|
 | `conversation` | `id` · `agent` · `created_at` |
 | `turn` | `id` (the job id) · `conversation_id` · `question` · `answer` · `status` (QUEUED · RUNNING · DONE · FAILED) · `claimed_by` · `attempts` · `created_at` · `updated_at` |
-| `span` | `turn_id` · `span` (the step number) · `pass` · `kind` (LLM · TOOL · NOTE) · `request` · `response` · `status` · `ms` · `attrs` (JSON) · key (`turn_id`, `span`) |
+| `span` | `turn_id` · `span` (the step number) · `pass` · `kind` (LLM · TOOL · AGENT · NOTE) · `request` · `response` · `status` · `ms` · `attrs` (JSON) · key (`turn_id`, `span`) |
 
 The durability section adds a fourth, `queue` (`turn_id` · `visible_at` · `receives`). Span numbers run on through a conversation, so a later turn points at an earlier turn's span by one number.
 
