@@ -6,9 +6,10 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
-/** Rows kept in a map, for tests and embedding. Gone when the process ends. */
+/** Rows and job rows kept in maps, for tests and embedding. Gone when the process ends. */
 public class InMemoryRunStore implements RunStore {
 
+    private final Map<String, Job> jobs = new LinkedHashMap<>();
     private final Map<String, List<Span>> runs = new LinkedHashMap<>();
 
     @Override
@@ -17,6 +18,8 @@ public class InMemoryRunStore implements RunStore {
         while (runs.containsKey(runId)) {
             runId = RunStore.newId();
         }
+        long now = System.currentTimeMillis();
+        jobs.put(runId, new Job(runId, runId, agent, question, Job.Status.RUNNING, now, now));
         runs.put(runId, new ArrayList<>());
         return runId;
     }
@@ -34,6 +37,17 @@ public class InMemoryRunStore implements RunStore {
     @Override
     public boolean exists(String runId) {
         return runs.containsKey(runId);
+    }
+
+    @Override
+    public Job job(String runId) {
+        rows(runId);
+        return jobs.get(runId);
+    }
+
+    @Override
+    public void setStatus(String runId, Job.Status status) {
+        jobs.put(runId, job(runId).with(status, System.currentTimeMillis()));
     }
 
     private List<Span> rows(String runId) {

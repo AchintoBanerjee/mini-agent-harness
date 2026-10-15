@@ -32,21 +32,26 @@ public class AgentLoader {
         } catch (IOException e) {
             throw new UncheckedIOException("cannot read " + file, e);
         }
+        return parse(node, file.toString());
+    }
+
+    /** The agent in a JSON document, from a file or a PUT body; source names it in the error. */
+    public static Agent parse(JsonNode node, String source) {
         List<String> toolNames = new ArrayList<>();
-        for (JsonNode name : required(node, "tools", file)) {
+        for (JsonNode name : required(node, "tools", source)) {
             toolNames.add(name.asText());
         }
         return new Agent(
-                required(node, "name", file).asText(),
-                required(node, "description", file).asText(),
+                required(node, "name", source).asText(),
+                required(node, "description", source).asText(),
                 List.copyOf(toolNames),
-                required(node, "maxPasses", file).asInt(),
-                required(node, "toolTimeoutMs", file).asLong());
+                required(node, "maxPasses", source).asInt(),
+                required(node, "toolTimeoutMs", source).asLong());
     }
 
-    private static JsonNode required(JsonNode node, String field, Path file) {
+    private static JsonNode required(JsonNode node, String field, String source) {
         if (!node.has(field)) {
-            throw new IllegalArgumentException(file + ": missing \"" + field + "\"");
+            throw new IllegalArgumentException(source + ": missing \"" + field + "\"");
         }
         return node.get(field);
     }

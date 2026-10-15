@@ -11,38 +11,43 @@ import harness.core.Turn;
 import harness.eval.CaseResult;
 import harness.eval.EvalRunner;
 import harness.eval.GoldenCase;
+import harness.http.HttpApi;
 import harness.model.RuleBasedLLM;
 import harness.model.ToolCall;
-import harness.store.FileRunStore;
+import harness.store.SqliteRunStore;
 import harness.tools.Tool;
 import harness.tools.ToolCaller;
 import harness.tools.ToolLoader;
 import harness.tools.ToolRegistry;
 import harness.tools.ToolResult;
+import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
+import java.util.function.Supplier;
 
 /**
  * Command line, run from v2/: agents · tools · run --agent X "question" ["question" ...]
  * [--slow] [--crash-after N] [--crash-before-persist] · resume runId · replay runId [fromStep]
- * · eval [evals/golden.json]. Args are parsed by hand. Agents and tools are read from
- * agents/ and tools/; every run is logged to runs/. The two crash flags simulate a process
- * dying mid-run so that resume has something to pick up; --slow gives every lookup 300 ms
- * of simulated latency so that tools running together can be seen to overlap. Tool calls
- * are gated by the agent: only its listed tools run, each within its toolTimeoutMs. eval
- * scores the golden set in memory and prints one row per case and the totals.
+ * · eval [evals/golden.json] · serve [--port 8080]. Args are parsed by hand. Agents and
+ * tools are read from agents/ and tools/; every run is written to harness.db (SQLite), the
+ * same file the HTTP server uses. The two crash flags simulate a process dying mid-run so
+ * that resume has something to pick up; --slow gives every lookup 300 ms of simulated
+ * latency so that tools running together can be seen to overlap. Tool calls are gated by
+ * the agent: only its listed tools run, each within its toolTimeoutMs. eval scores the
+ * golden set in memory and prints one row per case and the totals.
  */
 public class Main {
 
     static final Path AGENTS = Path.of("agents");
     static final Path TOOLS = Path.of("tools");
-    static final Path RUNS = Path.of("runs");
+    static final Path DB = SqliteRunStore.DEFAULT_FILE;
     static final Path GOLDEN = Path.of("evals", "golden.json");
     static final int CRASH_EXIT = 3;
+    static final int DEFAULT_PORT = 8080;
 
     public static void main(String[] args) {
         if (args.length == 0) {
@@ -56,6 +61,7 @@ public class Main {
             case "resume" -> resume(rest);
             case "replay" -> replay(rest);
             case "eval" -> eval(rest);
+            case "serve" -> serve(rest);
             default -> usage();
         }
     }
@@ -105,37 +111,41 @@ public class Main {
 
         Agent agent = findAgent(agentName);
         ToolRegistry registry = ToolLoader.load(TOOLS);
-        FileRunStore store = new FileRunStore(RUNS);
-        RunListener listener = crashAfter > 0 ? crashAfter(crashAfter) : new ConsoleListener();
-        ToolCaller toolCaller = crashBeforePersist ? crashBeforePersist(registry, agent) : toolCaller(registry, agent);
-        Orchestrator orchestrator = new Orchestrator(agent, registry, new RuleBasedLLM(),
-                toolCaller, new RelaySummarizer(), store, listener);
+        try (SqliteRunStore store = new SqliteRunStore(DB)) {
+            RunListener listener = crashAfter > 0 ? crashAfter(crashAfter) : new ConsoleListener();
+            Orchestrator[] holder = new Orchestrator[1];
+            ToolCaller toolCaller = crashBeforePersist
+                    ? crashBeforePersist(registry, agent, () -> holder[0].conversation().id())
+                    : toolCaller(registry, agent);
+            holder[0] = new Orchestrator(agent, registry, new RuleBasedLLM(), toolCaller, new RelaySummarizer(), store, listener);
 
-        long started = System.nanoTime();
-        for (String question : questions) {
-            System.out.println("answer: " + orchestrator.run(question));
+            long started = System.nanoTime();
+            for (String question : questions) {
+                System.out.println("answer: " + holder[0].run(question));
+            }
+            footer(holder[0], store, started);
         }
-        footer(orchestrator, store, started);
     }
 
-    /** Picks a logged run up where it stopped: the agent comes from the run's start line. */
+    /** Picks a logged run up where it stopped: the agent comes from the job row. */
     static void resume(List<String> args) {
         if (args.size() != 1) {
             fail("usage: resume <runId>");
         }
         String runId = args.get(0);
-        FileRunStore store = new FileRunStore(RUNS);
-        if (!store.exists(runId)) {
-            fail("no run " + runId + " in " + RUNS + "/");
-        }
-        Agent agent = findAgent(store.agent(runId));
-        ToolRegistry registry = ToolLoader.load(TOOLS);
-        Orchestrator orchestrator = new Orchestrator(agent, registry, new RuleBasedLLM(),
-                toolCaller(registry, agent), new RelaySummarizer(), store, new ConsoleListener());
+        try (SqliteRunStore store = new SqliteRunStore(DB)) {
+            if (!store.exists(runId)) {
+                fail("no run " + runId + " in " + DB);
+            }
+            Agent agent = findAgent(store.job(runId).agent());
+            ToolRegistry registry = ToolLoader.load(TOOLS);
+            Orchestrator orchestrator = new Orchestrator(agent, registry, new RuleBasedLLM(),
+                    toolCaller(registry, agent), new RelaySummarizer(), store, new ConsoleListener());
 
-        long started = System.nanoTime();
-        System.out.println("answer: " + orchestrator.resume(runId));
-        footer(orchestrator, store, started);
+            long started = System.nanoTime();
+            System.out.println("answer: " + orchestrator.resume(runId));
+            footer(orchestrator, store, started);
+        }
     }
 
     /** Prints the stored rows of a run from the given step on (default: from the first). */
@@ -145,12 +155,13 @@ public class Main {
         }
         String runId = args.get(0);
         int fromStep = args.size() == 2 ? positive(args.get(1), "fromStep") : 1;
-        FileRunStore store = new FileRunStore(RUNS);
-        if (!store.exists(runId)) {
-            fail("no run " + runId + " in " + RUNS + "/");
-        }
-        for (Span span : store.load(runId, fromStep)) {
-            System.out.println(ConsoleListener.format(span));
+        try (SqliteRunStore store = new SqliteRunStore(DB)) {
+            if (!store.exists(runId)) {
+                fail("no run " + runId + " in " + DB);
+            }
+            for (Span span : store.load(runId, fromStep)) {
+                System.out.println(ConsoleListener.format(span));
+            }
         }
     }
 
@@ -171,7 +182,31 @@ public class Main {
         System.out.println(EvalRunner.footer(results));
     }
 
-    /** Simulated crash: row N is in the file and on screen, then the process is gone. */
+    /** The HTTP API on localhost: agents/, tools/ and harness.db behind it. Runs until killed. */
+    static void serve(List<String> args) {
+        int port = DEFAULT_PORT;
+        for (int i = 0; i < args.size(); i++) {
+            if (args.get(i).equals("--port") && i + 1 < args.size()) {
+                port = port(args.get(++i));
+            } else {
+                fail("usage: serve [--port 8080]   (--port 0 picks a free port)");
+            }
+        }
+        HttpApi api = new HttpApi(AGENTS, TOOLS, new SqliteRunStore(DB));
+        try {
+            api.start(port);
+        } catch (IOException e) {
+            fail("cannot listen on port " + port + ": " + e.getMessage());
+        }
+        System.out.println("listening on http://localhost:" + api.port() + " · agents/ tools/ " + DB + " · ctrl-c stops it");
+        try {
+            Thread.currentThread().join();
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
+    }
+
+    /** Simulated crash: row N is in the store and on screen, then the process is gone. */
     static RunListener crashAfter(int n) {
         ConsoleListener console = new ConsoleListener();
         return span -> {
@@ -190,20 +225,20 @@ public class Main {
     }
 
     /** Simulated crash in the at-least-once window: the tool did its work, its TOOL row never lands. */
-    static ToolCaller crashBeforePersist(ToolRegistry registry, Agent agent) {
+    static ToolCaller crashBeforePersist(ToolRegistry registry, Agent agent, Supplier<String> runId) {
         return new ToolCaller(registry, agent.toolNames(), Duration.ofMillis(agent.toolTimeoutMs())) {
             @Override
             public ToolResult call(ToolCall call) {
                 ToolResult result = super.call(call);
-                System.out.println("crash: exit " + CRASH_EXIT + " after " + call.toolName()
-                        + " ran, before its TOOL row was written (simulated) · handler calls: " + ToolLoader.handlerCalls());
+                System.out.println("crash: exit " + CRASH_EXIT + " after " + call.toolName() + " ran, before its TOOL row of run "
+                        + runId.get() + " was written (simulated) · handler calls: " + ToolLoader.handlerCalls());
                 System.exit(CRASH_EXIT);
                 return result;
             }
         };
     }
 
-    static void footer(Orchestrator orchestrator, FileRunStore store, long started) {
+    static void footer(Orchestrator orchestrator, SqliteRunStore store, long started) {
         int passes = 0;
         int toolCalls = 0;
         for (Turn turn : orchestrator.conversation().turns()) {
@@ -218,8 +253,8 @@ public class Main {
         }
         long ms = (System.nanoTime() - started) / 1_000_000;
         String runId = orchestrator.conversation().id();
-        System.out.printf("run %s · %d passes · %d tool calls · %d ms · %s · handler calls: %s%n",
-                runId, passes, toolCalls, ms, store.file(runId), ToolLoader.handlerCalls());
+        System.out.printf("run %s · %d passes · %d tool calls · %d ms · %s in %s · handler calls: %s%n",
+                runId, passes, toolCalls, ms, store.job(runId).status(), store.file(), ToolLoader.handlerCalls());
     }
 
     static Agent findAgent(String name) {
@@ -245,9 +280,22 @@ public class Main {
         return 0;
     }
 
+    static int port(String value) {
+        try {
+            int n = Integer.parseInt(value);
+            if (n >= 0 && n <= 65535) {
+                return n;
+            }
+        } catch (NumberFormatException e) {
+            // falls through to the message below
+        }
+        fail("--port must be 0 to 65535, got " + value);
+        return 0;
+    }
+
     static void usage() {
         fail("usage: agents | tools | run --agent <name> \"question\" [\"question\" ...] [--slow] [--crash-after N] [--crash-before-persist]"
-                + " | resume <runId> | replay <runId> [fromStep] | eval [evals/golden.json]");
+                + " | resume <runId> | replay <runId> [fromStep] | eval [evals/golden.json] | serve [--port 8080]");
     }
 
     static void fail(String message) {

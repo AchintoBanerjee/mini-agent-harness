@@ -7,11 +7,12 @@ import java.util.concurrent.ThreadLocalRandom;
 
 /**
  * Where the rows of a run go. The Orchestrator appends every row here BEFORE it takes the
- * next step, so whatever happens to the process, the log says how far the run got.
+ * next step, so whatever happens to the process, the log says how far the run got. The
+ * job row next to the rows says whether the loop is still running, finished or threw.
  */
 public interface RunStore {
 
-    /** Opens a run and returns its id. */
+    /** Opens a run (a RUNNING job row) and returns its id. */
     String newRun(String agent, String question);
 
     /** Adds one row to the end of the run. Rows are never rewritten. */
@@ -22,7 +23,13 @@ public interface RunStore {
 
     boolean exists(String runId);
 
-    /** The rows from that step on: what replay prints. */
+    /** The job row: agent, question, status and times. */
+    Job job(String runId);
+
+    /** RUNNING while the loop runs, DONE at the end, FAILED if it threw. */
+    void setStatus(String runId, Job.Status status);
+
+    /** The rows from that step on: what replay prints and what an SSE client missed. */
     default List<Span> load(String runId, int fromStep) {
         List<Span> tail = new ArrayList<>();
         for (Span span : load(runId)) {

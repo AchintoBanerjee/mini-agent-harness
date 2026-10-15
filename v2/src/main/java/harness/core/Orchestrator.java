@@ -5,6 +5,7 @@ import harness.model.LLMProxy;
 import harness.model.ModelReply;
 import harness.model.ToolCall;
 import harness.store.InMemoryRunStore;
+import harness.store.Job;
 import harness.store.RunStore;
 import harness.tools.Tool;
 import harness.tools.ToolCaller;
@@ -14,6 +15,7 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.function.Supplier;
 
 /**
  * Owns the loop. Each question becomes a Turn: ask the model, run the tool or tools it
@@ -25,7 +27,8 @@ import java.util.Map;
  * between two rows resumes from the log without asking the model again for that decision.
  * Several questions form one conversation: the model sees the earlier turns as Q/A lines,
  * and a call whose tool and input already ran OK anywhere in the conversation is not run
- * again but recorded as DEDUPED, pointing at the step it repeats.
+ * again but recorded as DEDUPED, pointing at the step it repeats. The job row follows the
+ * loop: RUNNING while a turn runs, DONE when it ends, FAILED if it threw.
  */
 public class Orchestrator {
 
@@ -71,7 +74,20 @@ public class Orchestrator {
             conversation = new Conversation(store.newRun(agent.name(), question), agent);
         }
         Turn turn = conversation.turn(question);
-        return loop(turn, conversation.turns().size(), 1);
+        return tracked(() -> loop(turn, conversation.turns().size(), 1));
+    }
+
+    /**
+     * The first turn of a job the store already holds: POST /runs writes the job row and
+     * answers with its id at once, then calls this on a thread of its own.
+     */
+    public String start(String jobId, String question) {
+        if (conversation != null) {
+            throw new IllegalStateException("this orchestrator already holds run " + conversation.id());
+        }
+        conversation = new Conversation(jobId, agent);
+        Turn turn = conversation.turn(question);
+        return tracked(() -> loop(turn, 1, 1));
     }
 
     /**
@@ -88,31 +104,47 @@ public class Orchestrator {
         if (rows.isEmpty()) {
             throw new IllegalStateException("run " + runId + " has no rows to resume from");
         }
-        conversation = new Conversation(runId, agent);
-        Turn turn = null;
-        for (Span row : rows) {
-            if (row.turn() != conversation.turns().size()) {
-                String question = row.attrs().get(QUESTION);
-                if (question == null) {
-                    throw new IllegalStateException("row " + row.step() + " of " + runId + " carries no question: this log predates resume");
-                }
-                turn = conversation.turn(question);
-            }
-            turn.spans().add(row);
-        }
-        for (int i = 0; i < conversation.turns().size() - 1; i++) {
-            Turn earlier = conversation.turns().get(i);
+        conversation = Conversation.rebuild(runId, agent, rows);
+        List<Turn> turns = conversation.turns();
+        for (int i = 0; i < turns.size() - 1; i++) {
+            Turn earlier = turns.get(i);
             earlier.setAnswer(summarizer.summarize(earlier));
         }
         steps = rows.getLast().step();
-        int turnNo = conversation.turns().size();
+        Turn turn = turns.getLast();
+        int turnNo = turns.size();
 
         Span last = rows.getLast();
         boolean closed = last.status() == Span.Status.CUT_SHORT
                 || (last.kind() == Span.Kind.LLM && !last.attrs().containsKey(TOOL));
         if (closed) {
-            return finish(turn);
+            return tracked(() -> finish(turn));
         }
+        return tracked(() -> continueFrom(turn, turnNo, last));
+    }
+
+    /** The conversation so far: its id is the run id. Null until the first question opens the run. */
+    public Conversation conversation() {
+        return conversation;
+    }
+
+    /** The job row follows the work: RUNNING while it runs, DONE at the end, FAILED if it threw. */
+    private String tracked(Supplier<String> work) {
+        String id = conversation.id();
+        store.setStatus(id, Job.Status.RUNNING);
+        String answer;
+        try {
+            answer = work.get();
+        } catch (RuntimeException | Error thrown) {
+            store.setStatus(id, Job.Status.FAILED);
+            throw thrown;
+        }
+        store.setStatus(id, Job.Status.DONE);
+        return answer;
+    }
+
+    /** Resume's work: note where it picks up, run the decided calls that have no row yet, carry on. */
+    private String continueFrom(Turn turn, int turnNo, Span last) {
         record(turn, turnNo, last.pass(), Span.Kind.NOTE, "resumed from step " + last.step(), "",
                 Span.Status.OK, 0, Map.of());
 
@@ -131,11 +163,6 @@ public class Orchestrator {
             runCalls(turn, turnNo, decided.pass(), calls.subList(toolRowsAfter, calls.size()), decided.step());
         }
         return loop(turn, turnNo, decided.pass() + 1);
-    }
-
-    /** The conversation so far: its id is the run id. Null until the first question opens the run. */
-    public Conversation conversation() {
-        return conversation;
     }
 
     /** Ask, run, repeat from the given pass until Done or the cap. */

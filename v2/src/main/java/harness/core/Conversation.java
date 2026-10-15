@@ -34,4 +34,25 @@ public class Conversation {
         turns.add(turn);
         return turn;
     }
+
+    /**
+     * The turns of a logged run, rebuilt from its rows: the first row of each turn is the
+     * LLM row that carries the question. Resume continues the last turn; GET /runs reads
+     * its answer.
+     */
+    public static Conversation rebuild(String id, Agent agent, List<Span> rows) {
+        Conversation conversation = new Conversation(id, agent);
+        Turn turn = null;
+        for (Span row : rows) {
+            if (row.turn() != conversation.turns.size()) {
+                String question = row.attrs().get(Orchestrator.QUESTION);
+                if (question == null) {
+                    throw new IllegalStateException("row " + row.step() + " of " + id + " carries no question: this log predates resume");
+                }
+                turn = conversation.turn(question);
+            }
+            turn.spans().add(row);
+        }
+        return conversation;
+    }
 }
