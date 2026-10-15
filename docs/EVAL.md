@@ -1,6 +1,6 @@
 # Measuring the harness
 
-[The issue](#the-issue) · [The design](#the-design) · [The choices](#the-choices) · [What I ran](#what-i-ran-on-my-platform-in-production) · [The implementation](#the-implementation) · [Proof](#proof) · [Live, at scale](#live-at-scale-where-the-rows-go-and-who-judges) · [What v2 implements](#what-v2-implements)
+[The issue](#the-issue) · [Your own rows, or a product](#your-own-rows-or-a-product) · [The design](#the-design) · [The choices](#the-choices) · [What I ran](#what-i-ran-on-my-platform-in-production) · [The implementation](#the-implementation) · [Proof](#proof) · [Live, at scale](#live-at-scale-where-the-rows-go-and-who-judges) · [What v2 implements](#what-v2-implements)
 
 An agent can be up, fast, error-free, and completely wrong. Measuring a harness means two questions, asked separately and never blended into one score: did the loop do its job, and was the answer right. Every output below is from a real run of `./demo.sh`; the committed `demo-output.txt` is a later run, so ids and timings differ, nothing else.
 
@@ -9,6 +9,21 @@ An agent can be up, fast, error-free, and completely wrong. Measuring a harness 
 - The harness does not own any one agent's answer. It owns that the loop did its job, and that nothing moved when the harness changed, for every agent on it. That has to be measurable without reading each agent's prose.
 - The two questions get mixed. "Right tool, stopped by done, errors surfaced, how many passes, how long" are facts about the loop. "Was the answer right" is about the agent. One blended number cannot say which moved, since when, or who owns the fix.
 - Before ship there is an answer key. Live there is none: the only things that can be measured on real traffic are the facts in the rows and whether the answer stuck to what the tools returned.
+
+## Your own rows, or a product
+
+- The use case at scale is one view over every agent of every tenant: the rates per agent version, the drill-down from a rate to the exact turn, the judge's input. That is what LangSmith and the products like it sell.
+- The same thing can be done over your own rows: the loop writes every step, a scheduled job scores them, the scores sit beside the rows, a column store answers the fleet questions.
+
+| | over your own rows | a product such as LangSmith |
+|---|---|---|
+| the rows | yours, in your store; the text never leaves | its store, in its cloud or self-hosted; the text goes there |
+| before ship | your golden set, your runner, your table | datasets and experiments: the same idea, with screens |
+| live | a scheduled judge over a sample, scores beside the rows, rates per agent version | online evaluators on a sample: the same shape |
+| across tenants at scale | a column store beside the state database, such as ClickHouse: one GROUP BY, then the turn | built in: traces, scores, annotation queues, one view |
+| what it costs | you run the judge, the store and the screens | a bill per trace, and the data boundary question |
+
+v2 does it over its own rows: the golden set, the runner and the table are code over the spans the loop wrote. My platform did the same over its rows, with a scheduled judge on a sample. The step up is the same rows fanned into a column store or into LangSmith; the loop does not change, and the listener that gets every step is the seam.
 
 ## The design
 
@@ -124,13 +139,7 @@ The before-ship loop reads a few rows. The live loop reads every step of every a
 - **Telemetry travels, content stays.** Ids, dimensions and numbers go everywhere. The words stay in the tenant's store and are fetched by id, with authorization, when a human or the judge needs them. A redacted copy goes to the trace store only when the tenant opts in, in its region, with a retention limit. Never to a vendor's cloud for an enterprise tenant unless the contract says so.
 - **The judge runs inside that boundary.** It reads the tenant row by id, or the redacted copy, and writes back only a score.
 
-| Option | How it works | What you get | What it costs |
-|---|---|---|---|
-| the state database as the trace store | the rows the loop already writes, queried in place | nothing to add | analytics on the request path; no column to group by; every fleet question becomes a new metric and a deploy |
-| a column store you run, such as ClickHouse | the collector fans the spans into your own table | any question at query time, inside your boundary; the judge's input | a store to run; the schema is yours to keep |
-| a managed product on top of one, such as LangSmith or Langfuse | fed over the collector's exporter; no vendor SDK in the loop | the screens, online evaluators, datasets and annotation queues come with it | the text may only go where the contract allows: a vendor's cloud for some tenants, self-hosted in the tenant's region for the rest |
-
-I pick the column store beside the state database from day one, fed by the collector, and a managed product on top of it where the contract lets the text out. The judge runs inside the boundary where it does not. The loop never knows which.
+Which store, and whether a product sits on top, is the comparison at the top of this page.
 
 **What I ran, on my platform in production**
 
