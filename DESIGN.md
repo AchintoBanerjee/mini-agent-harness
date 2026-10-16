@@ -91,10 +91,10 @@ Page: [docs/ROUTING.md](docs/ROUTING.md)
 Page: [docs/SANDBOX.md](docs/SANDBOX.md)
 
 - The ask, in the brief's words: sandboxing tool execution "so a misbehaving tool can't reach the rest of the system". The rest of the system is the worker's process and memory, the store, the keys in the worker's environment, and the network.
-- For our own code calling known services, the clock and the gate are enough, and v2 had them: a hang is cut off, a throw is an ERROR row, a tool outside the agent's list is DENIED. For a tool that runs code it did not write, the model's or a third party's, v2 now has a `container` tool type: every call runs in a new container with no network, a read-only root, caps, no secrets, removed after; the clock kills it by name. One more branch in the loader, nothing else in the loop.
+- For our own code calling known services, the clock and the gate are enough, and v2 had them: a hang is cut off, a throw is an ERROR row, a tool outside the agent's list is DENIED. For a tool that runs code it did not write, the model's or a third party's, v2 now has a `container` tool type: every call runs in a new Docker container with no network, a read-only root, caps, no secrets, removed after; the clock kills it by name. One more branch in the loader, nothing else in the loop.
 - The demo's sandbox agent runs it: three tools try to read the secret, call out and write to the disk, each in a box of its own; the first finds no secret and says so, an OK row; the network and the disk refuse, two ERROR rows with the exit code; one that hangs is killed at the clock; one does honest work and returns. Without Docker the section is skipped and everything else runs.
-- Design, for production: the box is a Kubernetes pod from a warm pool, on a node pool with no secrets, owned by a runner service the worker calls over HTTP; a microVM when many tenants' code shares hosts. At every strength the tool acts as the user, with the user's own token scoped to the call.
-- What I ran on my platform: in production, tools calling the business systems as the user; as a proof of concept, a container runtime for a coding agent, the same shape as this.
+- Design, for production: the worker calls a runner service that owns the boxes, a pod per call on Kubernetes with the same walls, on nodes with no secrets; and the tool acts as the user, with the user's own token scoped to the call.
+- What I ran on my platform, in production: tools calling the business systems as the user, and a container runtime for a coding agent, a container per task, thrown away after: the same shape as this.
 
 ## 11 · The picture at the end
 
@@ -106,6 +106,5 @@ Three diagrams, in the order the pages added them, are the harness at scale: [th
 2. The Redis Stream per job id in place of the in-memory stream, and SQS with its dead-letter queue in place of the queue table.
 3. The tool catalog, the index and the search tool.
 4. The governor in front of the model.
-5. The runner service with a warm pool of sandbox pods in place of the `docker` command on the worker.
-6. The DAG on a workflow engine for the sequences that are known up front.
-7. A real model behind the interface, with tokens and cached tokens as columns in the eval.
+5. The DAG on a workflow engine for the sequences that are known up front.
+6. A real model behind the interface, with tokens and cached tokens as columns in the eval.

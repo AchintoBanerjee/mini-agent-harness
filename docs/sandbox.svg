@@ -1,0 +1,34 @@
+<svg viewBox="0 0 1120 190" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:1120px;font-family:-apple-system,Segoe UI,Roboto,sans-serif;font-size:12px">
+<defs><marker id="ah" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#1a1f2b"/></marker><marker id="ahr" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#b0222b"/></marker></defs>
+<style>.b{fill:#fff;stroke:#1a1f2b;stroke-width:1.4;rx:8}.s{fill:#f1f0ec;stroke:#1a1f2b;stroke-width:1.2;rx:8}.o{fill:#eef1f5;stroke:#0f6cbd;stroke-width:1.6;rx:8}.wx{fill:#f8e3e4;stroke:#b0222b;stroke-width:1.6;rx:8}.h{fill:#1a1f2b;font-weight:600}.m{fill:#5b6472;font-size:10.5px}.y{fill:#6b7280;font-size:9.5px;font-weight:700;letter-spacing:.08em}.rx{fill:#b0222b;font-size:10.5px;font-weight:600}.bx{fill:#0f6cbd;font-size:10.5px;font-weight:600}.l{stroke:#1a1f2b;stroke-width:1.3;marker-end:url(#ah)}.lr{stroke:#b0222b;stroke-width:1.3;marker-end:url(#ahr);stroke-dasharray:4 3}</style>
+<rect width="1120" height="190" fill="#fff"/>
+<text class="y" x="15" y="14">SANDBOXING TOOLS · A TOOL THAT RUNS CODE THE HARNESS DID NOT WRITE RUNS IN A DOCKER CONTAINER; WHATEVER IT DOES STAYS INSIDE</text>
+
+<rect class="b" x="15" y="40" width="270" height="120"/>
+<text class="h" x="150" y="62" text-anchor="middle">worker: the loop + tool caller</text>
+<text class="m" x="150" y="84" text-anchor="middle">has the store, the keys, the network</text>
+<text class="m" x="150" y="102" text-anchor="middle">a tool of type container</text>
+<text class="m" x="150" y="116" text-anchor="middle">is one more branch in the loader</text>
+<text class="m" x="150" y="138" text-anchor="middle">the clock on the call, as on every tool</text>
+
+<line class="l" x1="285" y1="80" x2="343" y2="80"/><text class="m" x="314" y="72" text-anchor="middle">docker run</text>
+<line class="l" x1="343" y1="120" x2="285" y2="120"/><text class="m" x="314" y="134" text-anchor="middle">TOOL row</text>
+
+<rect class="o" x="345" y="40" width="380" height="120"/>
+<text class="h" x="535" y="62" text-anchor="middle">a new container for this one call</text>
+<text class="m" x="535" y="84" text-anchor="middle">no network · read-only root · memory, CPU and process caps</text>
+<text class="m" x="535" y="98" text-anchor="middle">user nobody, no capabilities · nothing of the worker's inside</text>
+<text class="m" x="535" y="120" text-anchor="middle">the tool's command runs here, its input as $1</text>
+<text class="bx" x="535" y="142" text-anchor="middle">removed when the call ends, or killed by name at the clock</text>
+
+<line class="lr" x1="725" y1="100" x2="783" y2="100"/>
+<rect class="wx" x="785" y="40" width="320" height="120"/>
+<text class="h" x="945" y="62" text-anchor="middle">a bad tool inside gets</text>
+<text class="rx" x="945" y="84" text-anchor="middle">read the secret → not there</text>
+<text class="rx" x="945" y="100" text-anchor="middle">call out → Network unreachable</text>
+<text class="rx" x="945" y="116" text-anchor="middle">write to disk → Read-only file system</text>
+<text class="rx" x="945" y="132" text-anchor="middle">hang → cut off at the clock, the container killed</text>
+<text class="m" x="945" y="150" text-anchor="middle">each one a row with its status; the loop goes on</text>
+
+<text class="m" x="15" y="184">blue = built in v2 · red = what is contained</text>
+</svg>

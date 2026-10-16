@@ -11,7 +11,7 @@ The harness from the live round (`../v1`, frozen) extended in place, with HTTP a
 - A call repeated inside a conversation is deduped.
 - An agent can be a tool: its loop runs inside the tool call and its rows nest in the same turn.
 - A golden set scores the harness itself.
-- A tool that runs code the harness did not write runs in a throwaway container: `type: container`, no network, a read-only root, no secrets, killed at the agent's clock. Needs Docker; without it the call is an ERROR row, and its tests and demo section are skipped.
+- A tool that runs code the harness did not write runs in a throwaway Docker container: `type: container`, no network, a read-only root, no secrets, killed at the agent's clock. Without Docker the call is an ERROR row, and its tests and demo section are skipped.
 - The model is a stub (`RuleBasedLLM`): no network, no keys.
 - The pages: `../docs/V2_HLD.md` (the design), `../docs/DURABILITY.md` (the queue, the lease, the dead worker), `../docs/SUBAGENTS.md` (an agent as a tool), `../docs/SANDBOX.md` (the container tool type), `../DESIGN.md` (the write-up that ties them together).
 
@@ -446,7 +446,7 @@ A turn that spends its budget of model calls ends `FAILED` with a NOTE row `budg
 
 ### sandboxing: the `sandbox` agent, every tool in a throwaway container
 
-The `sandbox` agent's five tools are of type `container`: each call starts a new container from `alpine:3.20` with no network, a read-only root, caps on memory, CPU and processes, an unprivileged user and nothing mounted, runs the tool's command in it, and removes it after ([docs/SANDBOX.md](../docs/SANDBOX.md)). It needs a `docker` command with a running daemon; without one the call is an ERROR row that says so, and the demo skips this section. Three tools in one pass try to reach the rest of the system, with the worker started with a secret in its environment:
+The `sandbox` agent's five tools are of type `container`: each call starts a new Docker container from `alpine:3.20` with no network, a read-only root, caps on memory, CPU and processes, an unprivileged user and nothing mounted, runs the tool's command in it, and removes it after ([docs/SANDBOX.md](../docs/SANDBOX.md)). It needs a `docker` command with a running daemon; without one the call is an ERROR row that says so, and the demo skips this section. Three tools in one pass try to reach the rest of the system, with the worker started with a secret in its environment:
 
 ```
 $ curl -s -X POST http://localhost:64430/runs -d '{"agent":"sandbox","question":"read the secret, call out to the network, write to the disk"}'
