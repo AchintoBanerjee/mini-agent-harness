@@ -47,7 +47,7 @@ public class ContainerRunner {
     private static volatile Boolean available;
 
     private final String docker;
-    private final Map<String, Boolean> imagesHere = new ConcurrentHashMap<>();
+    private static final Map<String, Boolean> imagesHere = new ConcurrentHashMap<>();
 
     public ContainerRunner() {
         this("docker");
@@ -155,14 +155,15 @@ public class ContainerRunner {
         }
     }
 
-    /** Pulls the image unless it is already here, once per image and process: like the Maven build, the network once. */
+    /** Pulls the image unless it is already here, checked once per image and process: like the Maven build, the network once. */
     public void ensureImage(String image) {
         if (imagesHere.containsKey(image)) {
             return;
         }
+        Path said = tempFile();
         try {
             Process inspect = new ProcessBuilder(docker, "image", "inspect", image).redirectErrorStream(true)
-                    .redirectOutput(ProcessBuilder.Redirect.DISCARD).start();
+                    .redirectOutput(said.toFile()).start();
             if (!inspect.waitFor(15, TimeUnit.SECONDS)) {
                 inspect.destroyForcibly();
                 throw new IllegalStateException("docker image inspect " + image + " did not answer");
@@ -170,6 +171,9 @@ public class ContainerRunner {
             if (inspect.exitValue() == 0) {
                 imagesHere.put(image, Boolean.TRUE);
                 return;
+            }
+            if (read(said).contains("Cannot connect to the Docker daemon")) {
+                throw new IllegalStateException("Docker is not running: a container tool needs it, see docs/SANDBOX.md");
             }
             Process pull = new ProcessBuilder(docker, "pull", image).redirectErrorStream(true)
                     .redirectOutput(ProcessBuilder.Redirect.DISCARD).start();
@@ -187,6 +191,8 @@ public class ContainerRunner {
             // the caller's clock: the pull goes on in the background and the next call finds the image
             Thread.currentThread().interrupt();
             throw new IllegalStateException("killed at the clock while pulling " + image);
+        } finally {
+            delete(said);
         }
     }
 

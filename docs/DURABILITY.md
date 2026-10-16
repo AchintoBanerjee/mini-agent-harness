@@ -70,7 +70,7 @@ The queue is what I ran: the simplest thing that worked at that scale, and the l
 - The next version put an SQS-style queue with a visibility timeout in front of the loop: the worker extends it while the run is live, acks only after the last step is persisted, a dead worker's message becomes visible again and another pod picks it up, repeated failures go to the DLQ. The scaling lever became queue depth, not request count.
 - Resume is an opt-in log of completed tool calls per conversation: the new pod rebuilds the context from it and the model continues.
 - The contract: completed tool calls run once, the one in-flight call at least once, so tool writes are idempotent by key. If that is ever not enough, the fix is a started-marker before the call and a check on resume.
-- With hindsight durability was the real hard problem; the Temporal pick is in The choices above.
+- With hindsight durability was the real hard problem; where Temporal fits, and why I would start there next time, is in The choices above.
 
 ## The implementation
 

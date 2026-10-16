@@ -46,6 +46,6 @@ Code is in `src/main/java/harness`. `SampleTools` holds the three tools and thei
 
 ## Repo map
 
-- `src/main/java/harness`: the code, as built in the hour. `SampleTools` holds the three tools and their hard-coded data; `Main` is the demo driver.
+- `src/main/java/harness`: the code, as built in the hour.
 - `../docs/v1-whiteboard.png`: the whiteboard picture behind the design above.
 - `../v2/`: the harness extended into a small service; its manual is `../v2/README.md`.

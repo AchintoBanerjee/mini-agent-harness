@@ -32,7 +32,7 @@ public class ToolLoader {
     private static final ObjectMapper JSON = new ObjectMapper();
 
     /**
-     * How many times each lookup handler ran in this process, by tool name. The run and
+     * How many times each lookup or container handler ran in this process, by tool name. The run and
      * resume footers print it, so a call that ran twice around a crash is visible.
      */
     public static final Map<String, Integer> HANDLER_CALLS = new ConcurrentHashMap<>();

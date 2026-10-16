@@ -33,7 +33,7 @@
         <artifactId>maven-surefire-plugin</artifactId>
         <version>3.5.3</version>
       </plugin>
-      <!-- Copies the runtime jars (Jackson) to target/lib so the CLI runs with
+      <!-- Copies the runtime jars (Jackson and sqlite-jdbc) to target/lib so the CLI runs with
            java -cp "target/classes:target/lib/*" and no Maven on the call path. -->
       <plugin>
         <groupId>org.apache.maven.plugins</groupId>

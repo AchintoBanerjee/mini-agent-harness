@@ -13,7 +13,7 @@ The harness from the live round (`../v1`, frozen) extended in place, with HTTP a
 - A golden set scores the harness itself.
 - A tool that runs code the harness did not write runs in a throwaway Docker container: `type: container`, no network, a read-only root, no secrets, killed at the agent's clock. Without Docker the call is an ERROR row, and its tests and demo section are skipped.
 - The model is a stub (`RuleBasedLLM`): no network, no keys.
-- The pages: `../docs/V2_HLD.md` (the design), `../docs/DURABILITY.md` (the queue, the lease, the dead worker), `../docs/SUBAGENTS.md` (an agent as a tool), `../docs/SANDBOX.md` (the container tool type), `../DESIGN.md` (the write-up that ties them together).
+- The pages: `../docs/V2_HLD.md` (the design), `../docs/V2_FEATURES.md` (what the loop already does, each with a run), `../docs/DURABILITY.md` (the queue, the lease, the dead worker), `../docs/SCALING.md`, `../docs/PERFORMANCE.md` (dedupe among them), `../docs/SUBAGENTS.md` (an agent as a tool), `../docs/EVAL.md` (the golden set), `../docs/ROUTING.md` (design only), `../docs/SANDBOX.md` (the container tool type), `../DESIGN.md` (the write-up that ties them together).
 
 ## Build and test
 
@@ -471,7 +471,7 @@ Tool write_disk ERROR: Tool failed: exit 1: sh: line 0: can't create /etc/owned:
 done r-6e0d · 6 spans · 602 ms · DONE in harness.db · acked · handler calls: call_out=1, read_secrets=1, write_disk=1
 ```
 
-Honest work and a runaway in one pass; the hung container is killed by name:
+Honest work and a runaway in one pass; the hung container is killed by name (the `GET /turns/r-3cd6` reply between the worker and `docker ps` is left out here):
 
 ```
 $ java --enable-native-access=ALL-UNNAMED -cp "target/classes:target/lib/*" harness.cli.Main worker --once --api http://localhost:64430
@@ -496,7 +496,7 @@ Service): `receive` hands out the oldest visible message and hides it for the vi
 window, which is the lease; `extend` pushes the window, and the worker does that after every
 span it writes; `ack` deletes the message, and the worker does that last. A worker that dies
 never acks, so its message comes back when the lease runs out, and the next worker finds the
-saved spans and resumes from the last one. The whole section is `../docs/DURABILITY.md`.
+saved spans and resumes from the last one. The whole section is `../docs/DURABILITY.md`. The `GET /turns/r-9329` reply right after `submit`, status `QUEUED` and no spans, is left out of the block below.
 
 ```
 $ java --enable-native-access=ALL-UNNAMED -cp "target/classes:target/lib/*" harness.cli.Main submit --agent support "What is the status of order ORD-1?"

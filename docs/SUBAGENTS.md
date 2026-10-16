@@ -1,8 +1,8 @@
 # Sub-agents: an agent as a tool
 
-[The issue](#the-issue) · [The choices](#the-choices) · [What I ran](#what-i-ran-on-my-platform-in-production) · [Agent as a tool](#agent-as-a-tool) · [The implementation](#the-implementation) · [Proof](#proof) · [The DAG](#the-dag)
+[The issue](#the-issue) · [The choices](#the-choices) · [What I ran](#what-i-ran-on-my-platform) · [Agent as a tool](#agent-as-a-tool) · [The implementation](#the-implementation) · [Proof](#proof) · [The DAG](#the-dag)
 
-A run can hand a question to another agent and get the answer back as a tool result: the child is the same loop class, run inside the tool call, its rows in the same turn (job id). There are more multi-agent patterns in the frameworks than the three on this page; these are the ones I have run at scale, one of them only as far as pre-production, and they cover most of what teams need. Every output below is pasted from `demo-output.txt`, which `./demo.sh` writes.
+A run can hand a question to another agent and get the answer back as a tool result: the child is the same loop class, run inside the tool call, its rows in the same turn (job id). There are more multi-agent patterns in the frameworks than the three on this page; these are the ones I have run on my platform, group chat only as far as pre-production and the other two in production, and they cover most of what teams need. Every output below is pasted from `demo-output.txt`, which `./demo.sh` writes.
 
 ## The issue
 
@@ -33,7 +33,7 @@ Things to watch for:
 - an agent that delegates to itself, which needs a cap on depth;
 - a tree of agents that spends the whole turn's model calls, which needs one budget shared down the tree.
 
-## What I ran, on my platform in production
+## What I ran, on my platform
 
 - We picked a framework's group chat as our first multi-agent default. I had not researched the pattern enough.
 - One release in, with teams building on it, the numbers came back: up to twice the model calls, and every agent reading the whole conversation.
@@ -285,4 +285,4 @@ done r-f68e · 9 spans · 142 ms · DONE in harness.db · acked · handler calls
 
 The other pattern, for when the sequence is known. Most workflows are known up front and long-running, so what matters is that a run survives its worker and can be replayed; that is why the engine, not the model, should hold the sequence. The DAG holds the flow and the model never decides it: the routing is the edges, zero tokens, replayable, testable. Where a model node does route, at the top of the DAG, it routes on its inputs only. The leak to guard is the one in the watch list under [The choices](#the-choices): the nodes share one conversation, so only a node's output may pass to the next.
 
-For this proof of concept I built agent as a tool, because the example's sequence is not known up front and it fits the loop we already have. The DAG is just as implementable. My platform ended up with both, the DAG on our own engine. If I built it again I would put the DAG on a workflow engine such as Temporal, for the durability and the replay: a long workflow survives its worker. I have not run one, so that is a direction, not a result. Which one a platform leans on depends on its workloads.
+For this proof of concept I built agent as a tool, because the example's sequence is not known up front and it fits the loop we already have. The DAG is just as implementable. My platform ended up with both, the DAG on our own engine. If I built it again I would put the DAG on a workflow engine such as Temporal, for the durability and the replay: a long workflow survives its worker. I have not run one, so that is a direction, not a result.

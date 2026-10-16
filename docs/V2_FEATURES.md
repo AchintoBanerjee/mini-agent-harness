@@ -26,7 +26,7 @@ What pass 2 sees for the status question, "What is the status of order ORD-1?": 
 ```
 question: What is the status of order ORD-1?
 rows so far:
-  1  LLM   pass 1 -> ToolCall[toolName=order_status, input={orderId=ORD-1}]  [OK 3 ms]
+  1  LLM   pass 1 -> ToolCall[toolName=order_status, input={orderId=ORD-1}]  [OK 2 ms]
   2  TOOL  order_status {orderId=ORD-1} -> Order ORD-1: SHIPPED, shipment SHP-1  [OK 0 ms]
 ```
 
@@ -163,7 +163,7 @@ Where: `Orchestrator.loop` for the cap and the budget, `TurnBudget`, `Orchestrat
   - Pass 1 reads the question. Every tool whose keywords and id pattern fit the question is called: one match is a single call, several are one batch, run together.
   - Later passes read the results. Every OK row is scanned for ids of the kind each id-taking tool accepts, and each tool-and-id pair that has no call row yet is called.
   - A failed row is not read. Neither is a repeated call's row, whose text only points at the earlier step.
-  - The stub says done when nothing new is named. That is what a real model does when a result names something it can look up.
+  - The stub says done when nothing new is named, and asks for a lookup when a result names an id one of its tools accepts. A real model does the same from the text of the result.
 
 The status question, from the worker's log: pass 1 asks for the order, pass 2 asks for the shipment the order named, pass 3 says done:
 

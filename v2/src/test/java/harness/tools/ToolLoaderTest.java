@@ -7,6 +7,7 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import harness.core.Span;
+import harness.model.ToolCall;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
@@ -118,7 +119,7 @@ class ToolLoaderTest {
         one.register(new Tool("read_secrets", "env in the box", "container", null, new MatchingCondition(List.of(), null),
                 input -> noDocker.run(ContainerRunner.DEFAULT_IMAGE, "env", List.of(), "harness-test-nodocker")));
 
-        ToolResult result = new ToolCaller(one).call(new harness.model.ToolCall("read_secrets", Map.of()));
+        ToolResult result = new ToolCaller(one).call(new ToolCall("read_secrets", Map.of()));
 
         assertEquals(Span.Status.ERROR, result.status());
         assertTrue(result.output().startsWith("Tool failed: Docker is not on the PATH"), result.output());

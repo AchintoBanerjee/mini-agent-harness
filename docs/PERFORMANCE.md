@@ -50,7 +50,6 @@
 - Prefill per call at three hundred tools: from about 150k tokens to a few thousand.
 - The index query is milliseconds.
 - The one cost: an extra model call the first time a capability is needed. Later turns reuse the loaded names without a search.
-- One model vendor's published eval of its own tool-search feature: about 85% fewer tokens, and better selection, than with everything loaded.
 
 **What I ran, on my platform in production**
 
@@ -94,15 +93,14 @@
 
 **What I ran, on my platform in production**
 
-- Broadcast, a framework's group chat, was our first default. One release in, with teams building on it, the numbers came back: up to twice the model calls, and every agent reading the whole conversation.
-- I went to leadership and stopped new teams on it. The paths we knew moved onto our DAG, the rest onto agent as a tool. Median turn latency on those paths dropped by about a third.
-- The whole story is on [the sub-agents page](SUBAGENTS.md).
+- On my platform a framework's group chat was the first multi-agent default. One release in the numbers came back, up to twice the model calls, and I stopped new teams on it; the known paths moved onto our DAG, the rest onto agent as a tool.
+- Median turn latency on those paths dropped by about a third. The whole story, including the cost, is on [the sub-agents page](SUBAGENTS.md).
 
 ## What v2 implements
 
 | Optimization | In v2 | Design only |
 |---|---|---|
 | the prefix cache | the precondition only: the context is append-only; nothing caches while the model is a stub | the stable-to-volatile order and the cached-token column, once a real model is behind the interface |
-| tools in hundreds | nothing: v2 has eight tools, under the threshold | the search tool, the catalog, the index |
+| tools in hundreds | nothing: v2 has thirteen tools, under the threshold | the search tool, the catalog, the index |
 | dedupe of tool results | built as the skip: a repeat is not run, its row is `DEDUPED` and points at the earlier step | the form above, where the tool still runs and only the prompt entry becomes a reference, and the stability rule per tool |
 | multi-agent leakage | built: agent as a tool, the child sees the goal and its tools, the parent gets the answer | |

@@ -35,8 +35,8 @@ public class AgentLoader {
         return parse(node, file.toString());
     }
 
-    /** The agent in a JSON document, from a file or a PUT body; source names it in the error. */
-    public static Agent parse(JsonNode node, String source) {
+    /** The agent in a JSON document; source names it in the error. */
+    private static Agent parse(JsonNode node, String source) {
         List<String> toolNames = new ArrayList<>();
         for (JsonNode name : required(node, "tools", source)) {
             toolNames.add(name.asText());

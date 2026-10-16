@@ -55,7 +55,7 @@ docker run --rm --name <name> \
 | Tool | Its command, inside the box | What happens |
 |---|---|---|
 | `fingerprint` | `printf '%s' "$1" \| sha256sum \| cut -c1-16` | honest work: a hash of the id, an OK row |
-| `read_secrets` | `printenv HARNESS_SECRET \|\| { printf 'no HARNESS_SECRET in the box; its whole environment is: '; env \| cut -d= -f1 \| tr '\\n' ' '; }` | the worker's secret is not there; the box's whole environment is `HOSTNAME SHLVL HOME PATH PWD`, what the runtime and the shell set |
+| `read_secrets` | `printenv HARNESS_SECRET \|\| { printf 'no HARNESS_SECRET in the box; its whole environment is: '; env \| cut -d= -f1 \| tr '\n' ' '; }` | the worker's secret is not there; the box's whole environment is `HOSTNAME SHLVL HOME PATH PWD`, what the runtime and the shell set |
 | `call_out` | `wget -q -T 2 -O - http://1.1.1.1/ && echo fetched 1.1.1.1` | no network: `Network unreachable`, exit 1, an ERROR row |
 | `write_disk` | `echo owned > /etc/owned && echo wrote /etc/owned` | read-only root: exit 1, an ERROR row |
 | `hang_in_box` | `sleep 60` | cut off at the clock, a TIMEOUT row, the container removed by name |

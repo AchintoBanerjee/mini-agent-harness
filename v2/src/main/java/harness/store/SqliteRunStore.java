@@ -1,5 +1,6 @@
 package harness.store;
 
+import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import harness.core.Span;
@@ -138,7 +139,7 @@ public class SqliteRunStore implements RunStore, AutoCloseable {
             insert.executeUpdate();
         } catch (SQLException e) {
             throw new IllegalStateException("cannot write span " + span.span() + " of " + turnId + " to " + file, e);
-        } catch (com.fasterxml.jackson.core.JsonProcessingException e) {
+        } catch (JsonProcessingException e) {
             throw new UncheckedIOException(e);
         }
     }
@@ -161,7 +162,7 @@ public class SqliteRunStore implements RunStore, AutoCloseable {
             }
         } catch (SQLException e) {
             throw new IllegalStateException("cannot read turn " + turnId + " from " + file, e);
-        } catch (com.fasterxml.jackson.core.JsonProcessingException e) {
+        } catch (JsonProcessingException e) {
             throw new UncheckedIOException(e);
         }
         return rows;

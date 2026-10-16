@@ -10,7 +10,7 @@ One page that ties the pages together, in the order they were built: what was bu
 
 ![the whiteboard from the live round](docs/v1-whiteboard.png)
 
-- The brief: `run(goal)`, a loop that hands the state to a model, runs the tool it asks for, feeds the result back, stops when the model says done; a stub model, no network. Then six follow-ups: durable runs, sub-agents, parallel tool calls, measuring the harness, routing across providers, sandboxing. Each of the six has a page below.
+- The brief: `run(goal)`, a loop that hands the state to a model, runs the tool it asks for, feeds the result back, stops when the model says done; a stub model, no network. Then six follow-ups: durable runs, sub-agents, parallel tool calls, measuring the harness, routing across providers, sandboxing. Five have a page of their own below; parallel tool calls is on the features page, section 3, with its run.
 - What I drew and built in the hour: Orchestrator owns the loop; LLMProxy is the stub; ToolCaller and ToolRegistry run and hold the tools; Conversation, Turn, Span and Context are the state; a Summarizer relays the answer. One process, one question, one tool, done.
 - What it could not do, and the follow-ups were about: a turn died with the process; nothing streamed; one tool at a time; no agent inside an agent; no way to say whether the loop did its job; the answer was the last tool's output.
 - `v1/` is that code, frozen at tag `v1`, with its own [README](v1/README.md).
@@ -40,7 +40,7 @@ Page: [docs/DURABILITY.md](docs/DURABILITY.md)
 - The split: the HTTP face and the loop become two processes with a queue between them, so a turn outlives the request that created it. A turn is a message; the visibility timeout is the lease; the worker extends it on every saved step and acks last.
 - A dead worker's message comes back by itself; the next worker loads the saved rows and continues, mid-chain, without asking the model again for a decision it has.
 - The contract: a saved step runs once; the one call in flight at the crash runs at least once; so a tool that writes is idempotent on the key the harness gives it.
-- Temporal, a workflow engine, is the step up from the queue: the same contract, with the bookkeeping done for you. I never evaluated it. What is scoped here keeps the same contract, so it would carry over.
+- Temporal, a workflow engine, is the step up from the queue: the same contract, with the bookkeeping done for you. I never evaluated it. What is scoped here keeps that contract, so it would carry over.
 - What the POC runs: one build, two processes on one laptop, one SQLite file, the queue table standing in for SQS. Not containers.
 
 ## 5 · Scaling
@@ -66,7 +66,7 @@ Page: [docs/PERFORMANCE.md](docs/PERFORMANCE.md)
 
 Page: [docs/SUBAGENTS.md](docs/SUBAGENTS.md)
 
-- Three patterns I have run at scale, one of them only as far as pre-production.
+- Three patterns I have run on my platform: group chat only as far as pre-production, agent as a tool and the DAG in production.
 - Group chat, or a supervisor: every agent sees the whole transcript, and the calls double.
 - Agent as a tool, built in v2: the child sees the goal and its own tools; the parent gets the answer.
 - The DAG, for a sequence known up front: best on a workflow engine; design here, not built.

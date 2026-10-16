@@ -42,7 +42,12 @@ import java.util.function.Supplier;
  */
 public class Orchestrator {
 
-    /** Attrs keys. The question is on every LLM row; tool (comma-joined when several) + input fields name the decided calls. */
+    /**
+     * Attrs keys. The question is on every LLM row; tool (comma-joined when several) + one value per
+     * input field name the decided calls. Limit: a pass that names one tool twice, or two tools on the
+     * same field with different ids, keeps only the last value and would not resume right; the shipped
+     * tools never produce such a pass, and a real model would need the calls stored as one JSON list.
+     */
     static final String QUESTION = "question";
     static final String TOOL = "tool";
     static final String KEY = "key";

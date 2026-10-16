@@ -46,7 +46,7 @@ I pick the expected trace, the sampled judge and named rates. I designed a blend
 
 - Before ship: the teams that own the agents recorded golden sets from real sessions, the expected tool calls stored next to the expected answer, and we replayed them before a change went out, on the answer only: the tool-choice check in the bullet below never shipped.
 - Live: a scheduled judge scored a sample of real turns per agent and published the trend per agent version. When a model switch broke agents in subtle ways, the trend broke, and we had it in days instead of weeks of anecdotes.
-- We took the important decisions on those numbers. Critical features and model changes shipped with confidence because the golden sets and the live judge said quality held; without them every change would have been a guess and an argument. The context fixes on the performance page shipped that way: the tenants' golden sets flat, the cost down.
+- We took the important decisions on those numbers. Critical features and model changes shipped with confidence because the golden sets and the live judge said quality held. The context fixes on the performance page shipped that way: the tenants' golden sets flat, the cost down.
 - It caught the big ones early, and they were about cost and time as much as correctness. The multi-agent pattern we started with burned far more tokens than anyone expected, up to twice the model calls per hop; the numbers showed it one release in, and that is what let me stop it. The same numbers put the context growth on a chart before customers did.
 - What was missing: the expected tool calls were recorded, but the check that compares them with the tools called never shipped, and tool errors were never counted. Both are plain code over rows we already had: the cheapest checks, and the ones missing.
 - The finding that made all of this real I reached by hand. I plotted prompt tokens per turn from the rows and saw a conversation at about 175k tokens by turn sixteen, most of it ten copies of one tool result. The context fixes that followed cut the token cost by about eighty percent and the context to about a tenth, with the golden sets flat. That is the check I would automate first.
@@ -97,7 +97,7 @@ public static CaseResult score(GoldenCase golden, List<Span> rows, String answer
 
 ## Proof
 
-<details><summary>proof: the golden set from the `eval` command, two FAILs left in on purpose; `POST /evals` returns the same lines</summary>
+<details><summary>proof: the golden set from the `eval` command, two FAILs left in on purpose; `POST /evals` returns the same table from its own run, so its ms column differs</summary>
 
 ```
  1  PASS  support    What is the status of order ORD-1?                      ran order_status,shipping_status  3 passes     11 ms
