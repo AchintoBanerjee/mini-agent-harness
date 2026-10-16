@@ -34,7 +34,7 @@ I pick the clock for our own tools and a container per call for anything that ru
 ## What I ran on my platform
 
 - In production: tools calling the business systems as the user, with the user's own credentials passed through and scoped to the call. A tool could reach only what that user could reach.
-- In production: a container runtime for a coding agent, a container per task, thrown away after. The same shape as this page.
+- In production: a container runtime for a coding agent. The same walls, but not thrown away after a task: the container is kept and reset between tasks, so a follow-up can reuse its state. There is more to that runtime than this page needs.
 
 ## The implementation
 
