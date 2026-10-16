@@ -90,11 +90,10 @@ Page: [docs/ROUTING.md](docs/ROUTING.md)
 
 Page: [docs/SANDBOX.md](docs/SANDBOX.md)
 
-- The ask, in the brief's words: sandboxing tool execution "so a misbehaving tool can't reach the rest of the system". The rest of the system is the worker's process and memory, the store, the keys in the worker's environment, and the network.
-- For our own code calling known services, the clock and the gate are enough, and v2 had them: a hang is cut off, a throw is an ERROR row, a tool outside the agent's list is DENIED. For a tool that runs code it did not write, the model's or a third party's, v2 now has a `container` tool type: every call runs in a new Docker container with no network, a read-only root, caps, no secrets, removed after; the clock kills it by name. One more branch in the loader, nothing else in the loop.
-- The demo's sandbox agent runs it: three tools try to read the secret, call out and write to the disk, each in a box of its own; the first finds no secret and says so, an OK row; the network and the disk refuse, two ERROR rows with the exit code; one that hangs is killed at the clock; one does honest work and returns. Without Docker the section is skipped and everything else runs.
-- Design, for production: the worker calls a runner service that owns the boxes, a pod per call on Kubernetes with the same walls, on nodes with no secrets; and the tool acts as the user, with the user's own token scoped to the call.
-- What I ran on my platform, in production: tools calling the business systems as the user, and a container runtime for a coding agent, with the same walls, where the container is kept and reset between tasks so a follow-up can reuse its state.
+- The ask: a misbehaving tool must not reach the rest of the system, the worker's process, the store, the keys, the network.
+- Our own tools need only the clock and the gate, and v2 had them. A tool that runs code it did not write gets the `container` type: each call in a new Docker container, no network, a read-only root, caps, no secrets, removed after, killed at the clock. One more branch in the loader, nothing else in the loop.
+- The demo proves it: a tool looks for the secret and finds none, one calls out and has no network, one writes and the disk is read-only, one hangs and is killed. Skipped without Docker.
+- Design, for production: the worker calls a runner service that owns the boxes, a pod per call, on nodes with no secrets; the tool acts as the user. What I ran: tools as the user in production, and a container runtime for a coding agent with the same walls, where the container is kept and reset between tasks.
 
 ## 11 · The picture at the end
 
