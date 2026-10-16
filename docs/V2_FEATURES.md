@@ -13,6 +13,7 @@ What the loop already does that the HLD page does not show, before the deep-dive
 | the pass cap and the budget | built: `maxPasses` per agent, `maxModelCalls` shared down a sub-agent tree, the depth cap | `OrchestratorTest`, `SubAgentTest`, the loop agent in the demo |
 | chaining across passes | built: after pass 1 the stub reads the results and asks for what they name, a three-pass chain for the status question that a dead worker's successor continues | the first turn of the demo; the durability section |
 | the answer | built: every tool result of the turn relayed, one per line, failures named, the stand-in for a model's final reply | every turn in the demo |
+| a sandbox for a tool that runs code | built: `type: container`, a throwaway container per call with no network, a read-only root, caps and no secrets, killed at the clock; [its own page](SANDBOX.md) | the demo's sandbox section, `ContainerRunnerTest` |
 
 ## The context is the memory
 
@@ -61,7 +62,7 @@ Where: `Context`, `Orchestrator.context`, `Orchestrator.open` for the rebuild on
 The run, with `--slow` giving every lookup 300 ms of simulated latency; two lookups take one sleep of wall time, not two:
 
 ```
-received r-ab46: attempt 1 · agent support · "Status of order ORD-2 and is product PRD-1 available?"
+received r-373e: attempt 1 · agent support · "Status of order ORD-2 and is product PRD-1 available?"
   1  LLM   pass 1 -> ToolCalls[calls=[ToolCall[toolName=order_status, input={orderId=ORD-2}], ToolCall[toolName=stock_status, input={productId=PRD-1}]]]  [OK 3 ms]
   2  TOOL  order_status {orderId=ORD-2} -> Order ORD-2: PROCESSING  [OK 302 ms]
   3  TOOL  stock_status {productId=PRD-1} -> Product PRD-1: 42 units in stock  [OK 302 ms]
@@ -84,50 +85,50 @@ The chaos agent has `toolTimeoutMs: 1000`; its `hang_forever` tool sleeps for a 
 ```
 id: 1
 event: step
-data: {"turnId":"r-d382","span":1,"pass":1,"kind":"LLM","request":"pass 1","response":"ToolCall[toolName=hang_forever, input={orderId=ORD-1}]","status":"OK","ms":0,"attrs":{"question":"Please hang while checking ORD-1","tool":"hang_forever","orderId":"ORD-1"}}
+data: {"turnId":"r-4f54","span":1,"pass":1,"kind":"LLM","request":"pass 1","response":"ToolCall[toolName=hang_forever, input={orderId=ORD-1}]","status":"OK","ms":0,"attrs":{"question":"Please hang while checking ORD-1","tool":"hang_forever","orderId":"ORD-1"}}
 
 id: 2
 event: step
-data: {"turnId":"r-d382","span":2,"pass":1,"kind":"TOOL","request":"hang_forever {orderId=ORD-1}","response":"cut off after 1000 ms","status":"TIMEOUT","ms":1000,"attrs":{"tool":"hang_forever","orderId":"ORD-1","key":"r-d382/1"}}
+data: {"turnId":"r-4f54","span":2,"pass":1,"kind":"TOOL","request":"hang_forever {orderId=ORD-1}","response":"cut off after 1000 ms","status":"TIMEOUT","ms":1000,"attrs":{"tool":"hang_forever","orderId":"ORD-1","key":"r-4f54/1"}}
 
 id: 3
 event: step
-data: {"turnId":"r-d382","span":3,"pass":2,"kind":"LLM","request":"pass 2","response":"Done[]","status":"OK","ms":0,"attrs":{"question":"Please hang while checking ORD-1"}}
+data: {"turnId":"r-4f54","span":3,"pass":2,"kind":"LLM","request":"pass 2","response":"Done[]","status":"OK","ms":0,"attrs":{"question":"Please hang while checking ORD-1"}}
 
 id: 4
 event: token
-data: {"turnId":"r-d382","text":"Tool "}
+data: {"turnId":"r-4f54","text":"Tool "}
 
 id: 5
 event: token
-data: {"turnId":"r-d382","text":"hang_forever "}
+data: {"turnId":"r-4f54","text":"hang_forever "}
 
 id: 6
 event: token
-data: {"turnId":"r-d382","text":"TIMEOUT: "}
+data: {"turnId":"r-4f54","text":"TIMEOUT: "}
 
 id: 7
 event: token
-data: {"turnId":"r-d382","text":"cut "}
+data: {"turnId":"r-4f54","text":"cut "}
 
 id: 8
 event: token
-data: {"turnId":"r-d382","text":"off "}
+data: {"turnId":"r-4f54","text":"off "}
 
 id: 9
 event: token
-data: {"turnId":"r-d382","text":"after "}
+data: {"turnId":"r-4f54","text":"after "}
 
 id: 10
 event: token
-data: {"turnId":"r-d382","text":"1000 "}
+data: {"turnId":"r-4f54","text":"1000 "}
 
 id: 11
 event: token
-data: {"turnId":"r-d382","text":"ms"}
+data: {"turnId":"r-4f54","text":"ms"}
 
 event: done
-data: {"turnId":"r-d382","status":"DONE","answer":"Tool hang_forever TIMEOUT: cut off after 1000 ms"}
+data: {"turnId":"r-4f54","status":"DONE","answer":"Tool hang_forever TIMEOUT: cut off after 1000 ms"}
 ```
 
 Where: `ToolCaller.await` waits for the call until its deadline and cancels it past it. A tool that throws is the same shape with `ERROR` and the exception's message.
@@ -147,7 +148,7 @@ Where: `ToolCaller.run`, the first two checks. The test `aModelThatNamesAToolOut
 - The depth cap: a child loop at depth 2 cannot delegate again. An agent that lists itself as a tool stops there with an error row instead of a stack overflow:
 
 ```
-  1  LLM   pass 1 -> ToolCall[toolName=ask_loop, input={goal=loop, please}]  [OK 2 ms]
+  1  LLM   pass 1 -> ToolCall[toolName=ask_loop, input={goal=loop, please}]  [OK 3 ms]
     2  LLM   pass 1 -> ToolCall[toolName=ask_loop, input={goal=loop, please}]  [OK 0 ms]
       3  LLM   pass 1 -> ToolCall[toolName=ask_loop, input={goal=loop, please}]  [OK 0 ms]
       4  AGENT  ask_loop {goal=loop, please} -> Tool failed: depth limit: a loop at depth 2 cannot delegate  [ERROR 0 ms]
@@ -167,8 +168,8 @@ Where: `Orchestrator.loop` for the cap and the budget, `TurnBudget`, `Orchestrat
 The status question, from the worker's log: pass 1 asks for the order, pass 2 asks for the shipment the order named, pass 3 says done:
 
 ```
-received r-fda1: attempt 1 · agent support · "What is the status of order ORD-1?"
-  1  LLM   pass 1 -> ToolCall[toolName=order_status, input={orderId=ORD-1}]  [OK 3 ms]
+received r-6d9b: attempt 1 · agent support · "What is the status of order ORD-1?"
+  1  LLM   pass 1 -> ToolCall[toolName=order_status, input={orderId=ORD-1}]  [OK 2 ms]
   2  TOOL  order_status {orderId=ORD-1} -> Order ORD-1: SHIPPED, shipment SHP-1  [OK 0 ms]
   3  LLM   pass 2 -> ToolCall[toolName=shipping_status, input={shipmentId=SHP-1}]  [OK 0 ms]
   4  TOOL  shipping_status {shipmentId=SHP-1} -> Shipment SHP-1: IN TRANSIT, arriving 2026-10-16  [OK 0 ms]
@@ -185,7 +186,7 @@ Shipment SHP-1: IN TRANSIT, arriving 2026-10-16
     2  LLM   pass 1 -> ToolCall[toolName=shipping_status, input={shipmentId=SHP-1}]  [OK 0 ms]
     3  TOOL  shipping_status {shipmentId=SHP-1} -> Shipment SHP-1: IN TRANSIT, arriving 2026-10-16  [OK 0 ms]
     4  LLM   pass 2 -> Done[]  [OK 0 ms]
-  5  AGENT  ask_logistics {goal=Where is shipment SHP-1 for my order?} -> Shipment SHP-1: IN TRANSIT, arriving 2026-10-16  [OK 10 ms]
+  5  AGENT  ask_logistics {goal=Where is shipment SHP-1 for my order?} -> Shipment SHP-1: IN TRANSIT, arriving 2026-10-16  [OK 9 ms]
   6  LLM   pass 2 -> Done[]  [OK 0 ms]
 ```
 

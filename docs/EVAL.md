@@ -100,14 +100,14 @@ public static CaseResult score(GoldenCase golden, List<Span> rows, String answer
 <details><summary>proof: the golden set from the `eval` command, two FAILs left in on purpose; `POST /evals` returns the same lines</summary>
 
 ```
- 1  PASS  support    What is the status of order ORD-1?                      ran order_status,shipping_status  3 passes     12 ms
+ 1  PASS  support    What is the status of order ORD-1?                      ran order_status,shipping_status  3 passes     11 ms
  2  PASS  support    Where is my shipment SHP-1?                             ran shipping_status              2 passes      0 ms
  3  PASS  support    Is product PRD-2 available?                             ran stock_status                 2 passes      0 ms
  4  PASS  support    What is the status of order ORD-99?                     ran order_status                 2 passes      0 ms
  5  PASS  support    What is the weather today?                              ran no tool                      1 pass       0 ms
- 6  PASS  chaos      Please hang while checking ORD-1                        ran hang_forever                 2 passes   1006 ms
+ 6  PASS  chaos      Please hang while checking ORD-1                        ran hang_forever                 2 passes   1009 ms
  7  PASS  chaos      boom                                                    ran throw_boom                   2 passes      0 ms
- 8  PASS  support    Status of order ORD-2 and is product PRD-1 available?   ran order_status,stock_status    2 passes      2 ms
+ 8  PASS  support    Status of order ORD-2 and is product PRD-1 available?   ran order_status,stock_status    2 passes      5 ms
  9  PASS  inventory  How many PRD-1 do we have in stock?                     ran stock_status                 2 passes      0 ms
 10  PASS  inventory  refund order ORD-1                                      ran no tool                      1 pass       0 ms
 11  FAIL  support    reorder ORD-1                                           ran order_status,shipping_status  3 passes      0 ms  tool_choice: expected [] got [order_status, shipping_status]; answer: expected "No tool" got "Order ORD-1: SHIPPED, shipment SHP-1 | Shipment SHP-1: IN TRANSIT, arriving 2026-10-16"

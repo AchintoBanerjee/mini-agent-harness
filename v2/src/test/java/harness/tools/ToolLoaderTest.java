@@ -22,8 +22,9 @@ class ToolLoaderTest {
     void theFolderBecomesARegistryWithEveryToolByName() {
         ToolRegistry registry = ToolLoader.load(TOOLS);
 
-        assertEquals(List.of("ask_logistics", "ask_loop", "hang_forever", "order_status", "refund_order", "shipping_status",
-                "stock_status", "throw_boom"), registry.all().stream().map(Tool::name).toList());
+        assertEquals(List.of("ask_logistics", "ask_loop", "call_out", "fingerprint", "hang_forever", "hang_in_box", "order_status",
+                "read_secrets", "refund_order", "shipping_status", "stock_status", "throw_boom", "write_disk"),
+                registry.all().stream().map(Tool::name).toList());
     }
 
     @Test
@@ -87,6 +88,41 @@ class ToolLoaderTest {
         assertTrue(tool.matching().match("boom").isPresent());
         IllegalStateException thrown = assertThrows(IllegalStateException.class, () -> tool.run(Map.of()));
         assertEquals("boom", thrown.getMessage());
+    }
+
+    @Test
+    void containerToolReadsItsCommandAndTakesTheDefaultImage() {
+        Tool tool = ToolLoader.loadOne(TOOLS.resolve("fingerprint.json"));
+
+        assertEquals("container", tool.type());
+        assertEquals("orderId", tool.inputField());
+        assertEquals("ORD-7", tool.matching().match("fingerprint order ORD-7").orElseThrow());
+        assertFalse(tool.isAgent());
+        assertNull(ToolLoader.loadOne(TOOLS.resolve("read_secrets.json")).inputField(), "a tool with no input field passes no argument");
+    }
+
+    @Test
+    void containerToolWithANameDockerWouldRefuseIsRejectedAtLoadTime(@TempDir Path dir) throws Exception {
+        Path file = dir.resolve("bad_name.json");
+        Files.writeString(file, "{ \"name\": \"run code\", \"description\": \"?\", \"type\": \"container\", \"command\": \"true\", \"match\": { \"keywords\": [] } }");
+
+        IllegalArgumentException thrown = assertThrows(IllegalArgumentException.class, () -> ToolLoader.loadOne(file));
+        assertTrue(thrown.getMessage().contains("bad_name.json"), thrown.getMessage());
+        assertTrue(thrown.getMessage().contains("names the container"), thrown.getMessage());
+    }
+
+    @Test
+    void containerToolWithoutDockerIsAnErrorResultNotACrash() {
+        ContainerRunner noDocker = new ContainerRunner("docker-that-is-not-installed");
+        ToolRegistry one = new ToolRegistry();
+        one.register(new Tool("read_secrets", "env in the box", "container", null, new MatchingCondition(List.of(), null),
+                input -> noDocker.run(ContainerRunner.DEFAULT_IMAGE, "env", List.of(), "harness-test-nodocker")));
+
+        ToolResult result = new ToolCaller(one).call(new harness.model.ToolCall("read_secrets", Map.of()));
+
+        assertEquals(Span.Status.ERROR, result.status());
+        assertTrue(result.output().startsWith("Tool failed: Docker is not on the PATH"), result.output());
+        assertTrue(result.output().contains("docs/SANDBOX.md"), result.output());
     }
 
     @Test

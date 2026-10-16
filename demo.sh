@@ -2,7 +2,7 @@
 # demo.sh: compiles v2, then runs the manual's commands in order, the HTTP face first, one header per section.
 #   ./demo.sh                                  watch it
 #   ./demo.sh > docs/demo-output.txt 2>&1      save the proof (the committed copy was made this way)
-# Needs Java 21+, Maven and curl on the PATH. Everything runs from v2/, where agents/, tools/ and harness.db live.
+# Needs Java 21+, Maven and curl on the PATH; Docker only for the sandbox section, which is skipped without it. Everything runs from v2/, where agents/, tools/ and harness.db live.
 set -u
 cd "$(dirname "$0")/v2" || exit 1
 
@@ -158,6 +158,38 @@ loop_id=$(turn_id_of "$ticket")
 if [ -z "$loop_id" ]; then echo "no turn id in the POST reply"; exit 1; fi
 echo "(loop delegates to loop delegates to loop; the loop at depth 2 may not delegate again, so its call is refused with an ERROR row, depth limit, and the answer climbs back up)"
 must worker --once --api "$base"
+
+header "sandboxing: the sandbox agent's tools run in a throwaway container; three try to reach the rest of the system and fail, one hangs and is killed at the clock"
+sandbox="run"
+if ! docker info >/dev/null 2>&1; then sandbox="(Docker is not running on this machine, so this section is skipped and everything else runs; docs/demo-output.txt has it, recorded with Docker running. docker info is the check.)"
+elif ! docker image inspect alpine:3.20 >/dev/null 2>&1 && ! docker pull alpine:3.20 >/dev/null 2>&1; then sandbox="(Docker is running but alpine:3.20 could not be pulled, so this section is skipped and everything else runs; docs/demo-output.txt has it. docker pull alpine:3.20 is the fix.)"
+fi
+if [ "$sandbox" = "run" ]; then
+    echo '$ docker image inspect alpine:3.20 >/dev/null 2>&1 || docker pull alpine:3.20      (the image, pulled once; every call starts a new container from it and removes it after)'
+    echo "(alpine:3.20 is here)"
+    echo "(the worker is started with a secret in its environment; the three tools in one pass run together, each in a container of its own: no HARNESS_SECRET and nothing else of the worker's environment in the box, no network, a read-only root. Each attempt is a row with its status, and the loop goes on:)"
+    ticket=$(curl_show -s -X POST "$base/runs" -d '{"agent":"sandbox","question":"read the secret, call out to the network, write to the disk"}')
+    printf '%s\n' "$ticket"
+    box_id=$(turn_id_of "$ticket")
+    if [ -z "$box_id" ]; then echo "no turn id in the POST reply"; exit 1; fi
+    echo "\$ HARNESS_SECRET=hunter2 $JAVA -cp \"$CP\" harness.cli.Main worker --once --api $base"
+    HARNESS_SECRET=hunter2 $JAVA -cp "$CP" harness.cli.Main worker --once --api "$base" || { echo "FAILED (exit $?): worker"; exit 1; }
+    curl_show -s "$base/turns/$box_id"
+    echo "(honest work and a runaway in one pass: fingerprint hashes the id inside its box and returns; hang_in_box sleeps for a minute and is cut off at the agent's toolTimeoutMs, and the runner kills its container by name, because the docker command is only a client:)"
+    ticket=$(curl_show -s -X POST "$base/runs" -d '{"agent":"sandbox","question":"fingerprint order ORD-1 and hang in the box"}')
+    printf '%s\n' "$ticket"
+    hang_id=$(turn_id_of "$ticket")
+    if [ -z "$hang_id" ]; then echo "no turn id in the POST reply"; exit 1; fi
+    must worker --once --api "$base"
+    curl_show -s "$base/turns/$hang_id"
+    sleep 1
+    echo '$ docker ps -a --filter name=harness- --format "{{.Names}} {{.Status}}"      (nothing left: --rm removed each container at its end, and the hung one was killed)'
+    left=$(docker ps -a --filter name=harness- --format "{{.Names}} {{.Status}}")
+    if [ -n "$left" ]; then printf '%s\n' "$left"; echo "FAILED: a container was left behind"; exit 1; fi
+    echo "(no containers left)"
+else
+    echo "$sandbox"
+fi
 
 header "durability: the queue, the lease, the dead worker"
 echo "(submit writes the turn row QUEUED and its queue message without HTTP, and comes back with the id:)"

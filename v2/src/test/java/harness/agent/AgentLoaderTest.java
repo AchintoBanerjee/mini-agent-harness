@@ -26,7 +26,7 @@ class AgentLoaderTest {
     void theFolderLoadsEveryAgentInFileNameOrder() {
         List<Agent> agents = AgentLoader.loadAll(AGENTS);
 
-        assertEquals(List.of("chaos", "concierge", "inventory", "logistics", "loop", "support"), agents.stream().map(Agent::name).toList());
+        assertEquals(List.of("chaos", "concierge", "inventory", "logistics", "loop", "sandbox", "support"), agents.stream().map(Agent::name).toList());
         assertEquals(List.of("stock_status"), agents.get(2).toolNames());
         assertEquals(2, agents.get(2).maxPasses());
         assertEquals(1000, agents.get(0).toolTimeoutMs());

@@ -110,7 +110,7 @@ class HttpApiTest {
         HttpResponse<String> list = get("/agents");
         assertEquals(200, list.statusCode());
         assertEquals("application/json; charset=utf-8", list.headers().firstValue("Content-Type").orElse(""));
-        assertEquals(List.of("chaos", "concierge", "inventory", "logistics", "loop", "support"), names(JSON.readTree(list.body())));
+        assertEquals(List.of("chaos", "concierge", "inventory", "logistics", "loop", "sandbox", "support"), names(JSON.readTree(list.body())));
 
         JsonNode support = JSON.readTree(get("/agents/support").body());
         assertEquals("Answers order, shipment and stock questions", support.get("description").asText());
@@ -123,16 +123,17 @@ class HttpApiTest {
         assertEquals("no agent named nope", JSON.readTree(missing.body()).get("error").asText());
 
         JsonNode tools = JSON.readTree(get("/tools").body());
-        assertEquals(List.of("ask_logistics", "ask_loop", "hang_forever", "order_status", "refund_order", "shipping_status",
-                "stock_status", "throw_boom"), names(tools));
+        assertEquals(List.of("ask_logistics", "ask_loop", "call_out", "fingerprint", "hang_forever", "hang_in_box", "order_status",
+                "read_secrets", "refund_order", "shipping_status", "stock_status", "throw_boom", "write_disk"), names(tools));
         assertEquals("agent", tools.get(0).get("type").asText());
         assertEquals("logistics", tools.get(0).get("agent").asText(), "an agent tool names the agent it runs");
         assertEquals("goal", tools.get(0).get("inputField").asText());
-        assertEquals("lookup", tools.get(3).get("type").asText());
-        assertEquals("orderId", tools.get(3).get("inputField").asText());
-        assertEquals("ORD-\\d+", tools.get(3).get("match").get("idPattern").asText());
-        assertFalse(tools.get(3).has("agent"), "a lookup is not an agent");
-        assertFalse(tools.get(7).has("inputField"), "throw_boom takes no input");
+        assertEquals("container", tools.get(2).get("type").asText(), "call_out runs in the sandbox");
+        assertEquals("lookup", tools.get(6).get("type").asText());
+        assertEquals("orderId", tools.get(6).get("inputField").asText());
+        assertEquals("ORD-\\d+", tools.get(6).get("match").get("idPattern").asText());
+        assertFalse(tools.get(6).has("agent"), "a lookup is not an agent");
+        assertFalse(tools.get(11).has("inputField"), "throw_boom takes no input");
 
         assertEquals(404, get("/nothing").statusCode());
         assertEquals(405, send(HttpRequest.newBuilder(uri("/tools")).DELETE().build()).statusCode());

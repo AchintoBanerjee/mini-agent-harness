@@ -1,0 +1,3 @@
+{ "name": "fingerprint", "description": "A short hash of an order id, computed inside the sandbox: the box doing honest work", "type": "container",
+  "inputField": "orderId", "match": { "keywords": ["fingerprint"], "idPattern": "ORD-\\d+" },
+  "command": "printf '%s' \"$1\" | sha256sum | cut -c1-16" }

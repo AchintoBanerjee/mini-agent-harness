@@ -111,56 +111,56 @@ The demo, the bare minimum, two processes on one laptop: submit, a worker proces
 ```
 (submit writes the turn row QUEUED and its queue message without HTTP, and comes back with the id:)
 $ java --enable-native-access=ALL-UNNAMED -cp "target/classes:target/lib/*" harness.cli.Main submit --agent support "What is the status of order ORD-1?"
-submitted r-26e4 · QUEUED in harness.db · agent support · "What is the status of order ORD-1?"
-$ curl -s http://localhost:62588/turns/r-26e4
+submitted r-9329 · QUEUED in harness.db · agent support · "What is the status of order ORD-1?"
+$ curl -s http://localhost:64430/turns/r-9329
 {
-  "id" : "r-26e4",
-  "conversationId" : "c-adda",
+  "id" : "r-9329",
+  "conversationId" : "c-6222",
   "agent" : "support",
   "question" : "What is the status of order ORD-1?",
   "answer" : null,
   "status" : "QUEUED",
   "claimedBy" : null,
   "attempts" : 0,
-  "createdAt" : 1792045734821,
-  "updatedAt" : 1792045734821,
+  "createdAt" : 1792113834392,
+  "updatedAt" : 1792113834392,
   "spans" : [ ]
 }
 (a worker takes it with a 2000 ms lease and dies right after its 2nd row is persisted: exit 3, no ack; the order lookup ran once in this process, so the crash line counts order_status=1)
-$ java --enable-native-access=ALL-UNNAMED -cp "target/classes:target/lib/*" harness.cli.Main worker --once --crash-after 2 --visibility-ms 2000 --api http://localhost:62588
-worker pid 48822 · lease 2000 ms · once · streams to http://localhost:62588 · harness.db
-received r-26e4: attempt 1 · agent support · "What is the status of order ORD-1?"
+$ java --enable-native-access=ALL-UNNAMED -cp "target/classes:target/lib/*" harness.cli.Main worker --once --crash-after 2 --visibility-ms 2000 --api http://localhost:64430
+worker pid 64467 · lease 2000 ms · once · streams to http://localhost:64430 · harness.db
+received r-9329: attempt 1 · agent support · "What is the status of order ORD-1?"
   1  LLM   pass 1 -> ToolCall[toolName=order_status, input={orderId=ORD-1}]  [OK 2 ms]
   2  TOOL  order_status {orderId=ORD-1} -> Order ORD-1: SHIPPED, shipment SHP-1  [OK 0 ms]
-crash: exit 3 right after row 2 of turn r-26e4 was persisted (simulated) · handler calls: order_status=1
+crash: exit 3 right after row 2 of turn r-9329 was persisted (simulated) · handler calls: order_status=1
 (process exited with code 3; the turn row says RUNNING, the message is still queued but hidden until the lease runs out)
 $ sleep 2
 (the lease has run out, so the next worker receives the same message again and resumes from the last saved step: it does not run the saved order_status call again, it continues the chain at pass 2, reads SHP-1 in the saved result, asks for the shipment and says done; its footer counts shipping_status=1 only, because order_status ran in the process that died:)
-$ java --enable-native-access=ALL-UNNAMED -cp "target/classes:target/lib/*" harness.cli.Main worker --once --api http://localhost:62588
-worker pid 48826 · lease 2000 ms · once · streams to http://localhost:62588 · harness.db
-received again: attempt 2, lease had expired · r-26e4 resumes from step 2
+$ java --enable-native-access=ALL-UNNAMED -cp "target/classes:target/lib/*" harness.cli.Main worker --once --api http://localhost:64430
+worker pid 64469 · lease 2000 ms · once · streams to http://localhost:64430 · harness.db
+received again: attempt 2, lease had expired · r-9329 resumes from step 2
   3  NOTE  resumed from step 2  [OK 0 ms]
   4  LLM   pass 2 -> ToolCall[toolName=shipping_status, input={shipmentId=SHP-1}]  [OK 1 ms]
   5  TOOL  shipping_status {shipmentId=SHP-1} -> Shipment SHP-1: IN TRANSIT, arriving 2026-10-16  [OK 0 ms]
   6  LLM   pass 3 -> Done[]  [OK 0 ms]
 answer: Order ORD-1: SHIPPED, shipment SHP-1
 Shipment SHP-1: IN TRANSIT, arriving 2026-10-16
-done r-26e4 · 6 spans · 114 ms · DONE in harness.db · acked · handler calls: shipping_status=1
+done r-9329 · 6 spans · 94 ms · DONE in harness.db · acked · handler calls: shipping_status=1
 (the API reads the same rows, whoever wrote them: DONE, attempt 2, claimed by the second worker's pid, all six spans, the answer with both lines)
-$ curl -s http://localhost:62588/turns/r-26e4
+$ curl -s http://localhost:64430/turns/r-9329
 {
-  "id" : "r-26e4",
-  "conversationId" : "c-adda",
+  "id" : "r-9329",
+  "conversationId" : "c-6222",
   "agent" : "support",
   "question" : "What is the status of order ORD-1?",
   "answer" : "Order ORD-1: SHIPPED, shipment SHP-1\nShipment SHP-1: IN TRANSIT, arriving 2026-10-16",
   "status" : "DONE",
-  "claimedBy" : "48826",
+  "claimedBy" : "64469",
   "attempts" : 2,
-  "createdAt" : 1792045734821,
-  "updatedAt" : 1792045738766,
+  "createdAt" : 1792113834392,
+  "updatedAt" : 1792113838090,
   "spans" : [ {
-    "turnId" : "r-26e4",
+    "turnId" : "r-9329",
     "span" : 1,
     "pass" : 1,
     "kind" : "LLM",
@@ -174,7 +174,7 @@ $ curl -s http://localhost:62588/turns/r-26e4
       "orderId" : "ORD-1"
     }
   }, {
-    "turnId" : "r-26e4",
+    "turnId" : "r-9329",
     "span" : 2,
     "pass" : 1,
     "kind" : "TOOL",
@@ -185,10 +185,10 @@ $ curl -s http://localhost:62588/turns/r-26e4
     "attrs" : {
       "tool" : "order_status",
       "orderId" : "ORD-1",
-      "key" : "r-26e4/1"
+      "key" : "r-9329/1"
     }
   }, {
-    "turnId" : "r-26e4",
+    "turnId" : "r-9329",
     "span" : 3,
     "pass" : 1,
     "kind" : "NOTE",
@@ -198,7 +198,7 @@ $ curl -s http://localhost:62588/turns/r-26e4
     "ms" : 0,
     "attrs" : { }
   }, {
-    "turnId" : "r-26e4",
+    "turnId" : "r-9329",
     "span" : 4,
     "pass" : 2,
     "kind" : "LLM",
@@ -212,7 +212,7 @@ $ curl -s http://localhost:62588/turns/r-26e4
       "shipmentId" : "SHP-1"
     }
   }, {
-    "turnId" : "r-26e4",
+    "turnId" : "r-9329",
     "span" : 5,
     "pass" : 2,
     "kind" : "TOOL",
@@ -223,10 +223,10 @@ $ curl -s http://localhost:62588/turns/r-26e4
     "attrs" : {
       "tool" : "shipping_status",
       "shipmentId" : "SHP-1",
-      "key" : "r-26e4/4"
+      "key" : "r-9329/4"
     }
   }, {
-    "turnId" : "r-26e4",
+    "turnId" : "r-9329",
     "span" : 6,
     "pass" : 3,
     "kind" : "LLM",

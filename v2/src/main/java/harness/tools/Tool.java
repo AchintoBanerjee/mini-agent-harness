@@ -7,7 +7,7 @@ import java.util.function.Function;
 
 /**
  * Something the agent can run. type names the adapter that built the handler (lookup,
- * sleep, fail, agent). inputField is the one input it needs, for example "orderId"; null
+ * sleep, fail, container, agent). inputField is the one input it needs, for example "orderId"; null
  * when the tool takes none. The handler does the work and returns text. A tool of type
  * agent is another agent run as a tool: agent names it, and the loop that offers the tool
  * binds the handler to itself, so the call runs a child loop and returns its answer.

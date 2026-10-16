@@ -1,4 +1,4 @@
-mini agent harness demo · 2026-10-15T06:28Z · java version "25.0.1" 2025-10-21 LTS
+mini agent harness demo · 2026-10-16T01:23Z · java version "25.0.1" 2025-10-21 LTS
 
 === compile v2 ===
 $ mvn -q compile      (classes to target/classes, Jackson and sqlite-jdbc to target/lib)
@@ -7,14 +7,14 @@ $ rm -f harness.db harness.db-wal harness.db-shm      (the demo starts from an e
 
 === the HTTP face: serve, and one worker, in the background ===
 $ java --enable-native-access=ALL-UNNAMED -cp "target/classes:target/lib/*" harness.cli.Main serve --port 0
-listening on http://localhost:62588 · agents/ tools/ harness.db · POST /runs queues a turn for a worker · ctrl-c stops it
+listening on http://localhost:64430 · agents/ tools/ harness.db · POST /runs queues a turn for a worker · ctrl-c stops it
 (the server stays in the background; --port 0 picked a free port, the manual uses 8080)
-$ java --enable-native-access=ALL-UNNAMED -cp "target/classes:target/lib/*" harness.cli.Main worker --api http://localhost:62588
-worker pid 48745 · lease 2000 ms · polling every 500 ms, ctrl-c stops it · streams to http://localhost:62588 · harness.db
+$ java --enable-native-access=ALL-UNNAMED -cp "target/classes:target/lib/*" harness.cli.Main worker --api http://localhost:64430
+worker pid 64360 · lease 2000 ms · polling every 500 ms, ctrl-c stops it · streams to http://localhost:64430 · harness.db
 (the worker stays in the background too: the server only queues turns, this process runs them and pushes every event of a turn to the server, which holds the run's stream)
 
 === agents and tools: metadata files, read over GET /agents and GET /tools ===
-$ curl -s http://localhost:62588/agents
+$ curl -s http://localhost:64430/agents
 [ {
   "name" : "chaos",
   "description" : "Runs misbehaving tools (a hang, a throw) next to a good one",
@@ -51,6 +51,13 @@ $ curl -s http://localhost:62588/agents
   "toolTimeoutMs" : 2000,
   "maxModelCalls" : 20
 }, {
+  "name" : "sandbox",
+  "description" : "Runs every tool in a throwaway container: honest work, three tools that try to reach out, one that hangs",
+  "tools" : [ "fingerprint", "read_secrets", "call_out", "write_disk", "hang_in_box" ],
+  "maxPasses" : 3,
+  "toolTimeoutMs" : 3000,
+  "maxModelCalls" : 20
+}, {
   "name" : "support",
   "description" : "Answers order, shipment and stock questions",
   "tools" : [ "order_status", "shipping_status", "stock_status" ],
@@ -58,7 +65,7 @@ $ curl -s http://localhost:62588/agents
   "toolTimeoutMs" : 2000,
   "maxModelCalls" : 20
 } ]
-$ curl -s http://localhost:62588/tools
+$ curl -s http://localhost:64430/tools
 [ {
   "name" : "ask_logistics",
   "type" : "agent",
@@ -79,6 +86,22 @@ $ curl -s http://localhost:62588/tools
     "keywords" : [ "loop" ]
   }
 }, {
+  "name" : "call_out",
+  "type" : "container",
+  "description" : "Tries to reach an address on the network from inside the sandbox: there is no network",
+  "match" : {
+    "keywords" : [ "call out", "network" ]
+  }
+}, {
+  "name" : "fingerprint",
+  "type" : "container",
+  "description" : "A short hash of an order id, computed inside the sandbox: the box doing honest work",
+  "inputField" : "orderId",
+  "match" : {
+    "keywords" : [ "fingerprint" ],
+    "idPattern" : "ORD-\\d+"
+  }
+}, {
   "name" : "hang_forever",
   "type" : "sleep",
   "description" : "Sleeps for a minute: the runaway tool",
@@ -88,6 +111,13 @@ $ curl -s http://localhost:62588/tools
     "idPattern" : "ORD-\\d+"
   }
 }, {
+  "name" : "hang_in_box",
+  "type" : "container",
+  "description" : "Sleeps for a minute inside the sandbox: the runaway, killed at the clock",
+  "match" : {
+    "keywords" : [ "hang" ]
+  }
+}, {
   "name" : "order_status",
   "type" : "lookup",
   "description" : "Status of an order, by order id",
@@ -95,6 +125,13 @@ $ curl -s http://localhost:62588/tools
   "match" : {
     "keywords" : [ "order" ],
     "idPattern" : "ORD-\\d+"
+  }
+}, {
+  "name" : "read_secrets",
+  "type" : "container",
+  "description" : "Tries to read the worker's secrets from the environment: the sandbox has none",
+  "match" : {
+    "keywords" : [ "secret" ]
   }
 }, {
   "name" : "refund_order",
@@ -130,45 +167,52 @@ $ curl -s http://localhost:62588/tools
   "match" : {
     "keywords" : [ "boom" ]
   }
+}, {
+  "name" : "write_disk",
+  "type" : "container",
+  "description" : "Tries to write a file outside /tmp inside the sandbox: the root is read-only",
+  "match" : {
+    "keywords" : [ "write", "disk" ]
+  }
 } ]
 
 === a turn that chains: POST /runs answers with the turn id at once; GET /turns/{id} once the worker is done shows the model asking for the order, reading the shipment id in the result, asking for the shipment, then saying done ===
-$ curl -s -X POST http://localhost:62588/runs -d '{"agent":"support","question":"What is the status of order ORD-1?"}'
+$ curl -s -X POST http://localhost:64430/runs -d '{"agent":"support","question":"What is the status of order ORD-1?"}'
 {
-  "turnId" : "r-fda1",
-  "jobId" : "r-fda1",
-  "conversationId" : "c-4404",
+  "turnId" : "r-6d9b",
+  "jobId" : "r-6d9b",
+  "conversationId" : "c-0fd2",
   "status" : "QUEUED"
 }
 (202 came back at once with the turn QUEUED; the worker took it, and one second later the turn row says DONE, who ran it, the answer, and the spans: five rows over three passes. Pass 1 asks for the order; pass 2 reads SHP-1 in the order's result and asks for the shipment, decided from that row, not from the question; pass 3 says done because the results name nothing new. The answer relays both results, one line each:)
-$ curl -s http://localhost:62588/turns/r-fda1
+$ curl -s http://localhost:64430/turns/r-6d9b
 {
-  "id" : "r-fda1",
-  "conversationId" : "c-4404",
+  "id" : "r-6d9b",
+  "conversationId" : "c-0fd2",
   "agent" : "support",
   "question" : "What is the status of order ORD-1?",
   "answer" : "Order ORD-1: SHIPPED, shipment SHP-1\nShipment SHP-1: IN TRANSIT, arriving 2026-10-16",
   "status" : "DONE",
-  "claimedBy" : "48745",
+  "claimedBy" : "64360",
   "attempts" : 1,
-  "createdAt" : 1792045726436,
-  "updatedAt" : 1792045726891,
+  "createdAt" : 1792113819375,
+  "updatedAt" : 1792113819793,
   "spans" : [ {
-    "turnId" : "r-fda1",
+    "turnId" : "r-6d9b",
     "span" : 1,
     "pass" : 1,
     "kind" : "LLM",
     "request" : "pass 1",
     "response" : "ToolCall[toolName=order_status, input={orderId=ORD-1}]",
     "status" : "OK",
-    "ms" : 3,
+    "ms" : 2,
     "attrs" : {
       "question" : "What is the status of order ORD-1?",
       "tool" : "order_status",
       "orderId" : "ORD-1"
     }
   }, {
-    "turnId" : "r-fda1",
+    "turnId" : "r-6d9b",
     "span" : 2,
     "pass" : 1,
     "kind" : "TOOL",
@@ -179,10 +223,10 @@ $ curl -s http://localhost:62588/turns/r-fda1
     "attrs" : {
       "tool" : "order_status",
       "orderId" : "ORD-1",
-      "key" : "r-fda1/1"
+      "key" : "r-6d9b/1"
     }
   }, {
-    "turnId" : "r-fda1",
+    "turnId" : "r-6d9b",
     "span" : 3,
     "pass" : 2,
     "kind" : "LLM",
@@ -196,7 +240,7 @@ $ curl -s http://localhost:62588/turns/r-fda1
       "shipmentId" : "SHP-1"
     }
   }, {
-    "turnId" : "r-fda1",
+    "turnId" : "r-6d9b",
     "span" : 4,
     "pass" : 2,
     "kind" : "TOOL",
@@ -207,10 +251,10 @@ $ curl -s http://localhost:62588/turns/r-fda1
     "attrs" : {
       "tool" : "shipping_status",
       "shipmentId" : "SHP-1",
-      "key" : "r-fda1/3"
+      "key" : "r-6d9b/3"
     }
   }, {
-    "turnId" : "r-fda1",
+    "turnId" : "r-6d9b",
     "span" : 5,
     "pass" : 3,
     "kind" : "LLM",
@@ -226,208 +270,208 @@ $ curl -s http://localhost:62588/turns/r-fda1
 
 === the stream: GET /turns/{id}/events sends every step and every piece of the answer as it happens, then done; a reconnect with Last-Event-ID gets only the tail ===
 (the worker pushed each event to the server as the loop raised it; the server holds the run's stream and a client reads it from the last id it saw: the five steps, then the answer word by word, then done)
-$ curl -sN --max-time 5 http://localhost:62588/turns/r-fda1/events
+$ curl -sN --max-time 5 http://localhost:64430/turns/r-6d9b/events
 id: 1
 event: step
-data: {"turnId":"r-fda1","span":1,"pass":1,"kind":"LLM","request":"pass 1","response":"ToolCall[toolName=order_status, input={orderId=ORD-1}]","status":"OK","ms":3,"attrs":{"question":"What is the status of order ORD-1?","tool":"order_status","orderId":"ORD-1"}}
+data: {"turnId":"r-6d9b","span":1,"pass":1,"kind":"LLM","request":"pass 1","response":"ToolCall[toolName=order_status, input={orderId=ORD-1}]","status":"OK","ms":2,"attrs":{"question":"What is the status of order ORD-1?","tool":"order_status","orderId":"ORD-1"}}
 
 id: 2
 event: step
-data: {"turnId":"r-fda1","span":2,"pass":1,"kind":"TOOL","request":"order_status {orderId=ORD-1}","response":"Order ORD-1: SHIPPED, shipment SHP-1","status":"OK","ms":0,"attrs":{"tool":"order_status","orderId":"ORD-1","key":"r-fda1/1"}}
+data: {"turnId":"r-6d9b","span":2,"pass":1,"kind":"TOOL","request":"order_status {orderId=ORD-1}","response":"Order ORD-1: SHIPPED, shipment SHP-1","status":"OK","ms":0,"attrs":{"tool":"order_status","orderId":"ORD-1","key":"r-6d9b/1"}}
 
 id: 3
 event: step
-data: {"turnId":"r-fda1","span":3,"pass":2,"kind":"LLM","request":"pass 2","response":"ToolCall[toolName=shipping_status, input={shipmentId=SHP-1}]","status":"OK","ms":0,"attrs":{"question":"What is the status of order ORD-1?","tool":"shipping_status","shipmentId":"SHP-1"}}
+data: {"turnId":"r-6d9b","span":3,"pass":2,"kind":"LLM","request":"pass 2","response":"ToolCall[toolName=shipping_status, input={shipmentId=SHP-1}]","status":"OK","ms":0,"attrs":{"question":"What is the status of order ORD-1?","tool":"shipping_status","shipmentId":"SHP-1"}}
 
 id: 4
 event: step
-data: {"turnId":"r-fda1","span":4,"pass":2,"kind":"TOOL","request":"shipping_status {shipmentId=SHP-1}","response":"Shipment SHP-1: IN TRANSIT, arriving 2026-10-16","status":"OK","ms":0,"attrs":{"tool":"shipping_status","shipmentId":"SHP-1","key":"r-fda1/3"}}
+data: {"turnId":"r-6d9b","span":4,"pass":2,"kind":"TOOL","request":"shipping_status {shipmentId=SHP-1}","response":"Shipment SHP-1: IN TRANSIT, arriving 2026-10-16","status":"OK","ms":0,"attrs":{"tool":"shipping_status","shipmentId":"SHP-1","key":"r-6d9b/3"}}
 
 id: 5
 event: step
-data: {"turnId":"r-fda1","span":5,"pass":3,"kind":"LLM","request":"pass 3","response":"Done[]","status":"OK","ms":0,"attrs":{"question":"What is the status of order ORD-1?"}}
+data: {"turnId":"r-6d9b","span":5,"pass":3,"kind":"LLM","request":"pass 3","response":"Done[]","status":"OK","ms":0,"attrs":{"question":"What is the status of order ORD-1?"}}
 
 id: 6
 event: token
-data: {"turnId":"r-fda1","text":"Order "}
+data: {"turnId":"r-6d9b","text":"Order "}
 
 id: 7
 event: token
-data: {"turnId":"r-fda1","text":"ORD-1: "}
+data: {"turnId":"r-6d9b","text":"ORD-1: "}
 
 id: 8
 event: token
-data: {"turnId":"r-fda1","text":"SHIPPED, "}
+data: {"turnId":"r-6d9b","text":"SHIPPED, "}
 
 id: 9
 event: token
-data: {"turnId":"r-fda1","text":"shipment "}
+data: {"turnId":"r-6d9b","text":"shipment "}
 
 id: 10
 event: token
-data: {"turnId":"r-fda1","text":"SHP-1\nShipment "}
+data: {"turnId":"r-6d9b","text":"SHP-1\nShipment "}
 
 id: 11
 event: token
-data: {"turnId":"r-fda1","text":"SHP-1: "}
+data: {"turnId":"r-6d9b","text":"SHP-1: "}
 
 id: 12
 event: token
-data: {"turnId":"r-fda1","text":"IN "}
+data: {"turnId":"r-6d9b","text":"IN "}
 
 id: 13
 event: token
-data: {"turnId":"r-fda1","text":"TRANSIT, "}
+data: {"turnId":"r-6d9b","text":"TRANSIT, "}
 
 id: 14
 event: token
-data: {"turnId":"r-fda1","text":"arriving "}
+data: {"turnId":"r-6d9b","text":"arriving "}
 
 id: 15
 event: token
-data: {"turnId":"r-fda1","text":"2026-10-16"}
+data: {"turnId":"r-6d9b","text":"2026-10-16"}
 
 event: done
-data: {"turnId":"r-fda1","status":"DONE","answer":"Order ORD-1: SHIPPED, shipment SHP-1\nShipment SHP-1: IN TRANSIT, arriving 2026-10-16"}
+data: {"turnId":"r-6d9b","status":"DONE","answer":"Order ORD-1: SHIPPED, shipment SHP-1\nShipment SHP-1: IN TRANSIT, arriving 2026-10-16"}
 
 (a client that reconnects sends the last id it saw:)
-$ curl -sN --max-time 5 -H 'Last-Event-ID: 2' http://localhost:62588/turns/r-fda1/events
+$ curl -sN --max-time 5 -H 'Last-Event-ID: 2' http://localhost:64430/turns/r-6d9b/events
 id: 3
 event: step
-data: {"turnId":"r-fda1","span":3,"pass":2,"kind":"LLM","request":"pass 2","response":"ToolCall[toolName=shipping_status, input={shipmentId=SHP-1}]","status":"OK","ms":0,"attrs":{"question":"What is the status of order ORD-1?","tool":"shipping_status","shipmentId":"SHP-1"}}
+data: {"turnId":"r-6d9b","span":3,"pass":2,"kind":"LLM","request":"pass 2","response":"ToolCall[toolName=shipping_status, input={shipmentId=SHP-1}]","status":"OK","ms":0,"attrs":{"question":"What is the status of order ORD-1?","tool":"shipping_status","shipmentId":"SHP-1"}}
 
 id: 4
 event: step
-data: {"turnId":"r-fda1","span":4,"pass":2,"kind":"TOOL","request":"shipping_status {shipmentId=SHP-1}","response":"Shipment SHP-1: IN TRANSIT, arriving 2026-10-16","status":"OK","ms":0,"attrs":{"tool":"shipping_status","shipmentId":"SHP-1","key":"r-fda1/3"}}
+data: {"turnId":"r-6d9b","span":4,"pass":2,"kind":"TOOL","request":"shipping_status {shipmentId=SHP-1}","response":"Shipment SHP-1: IN TRANSIT, arriving 2026-10-16","status":"OK","ms":0,"attrs":{"tool":"shipping_status","shipmentId":"SHP-1","key":"r-6d9b/3"}}
 
 id: 5
 event: step
-data: {"turnId":"r-fda1","span":5,"pass":3,"kind":"LLM","request":"pass 3","response":"Done[]","status":"OK","ms":0,"attrs":{"question":"What is the status of order ORD-1?"}}
+data: {"turnId":"r-6d9b","span":5,"pass":3,"kind":"LLM","request":"pass 3","response":"Done[]","status":"OK","ms":0,"attrs":{"question":"What is the status of order ORD-1?"}}
 
 id: 6
 event: token
-data: {"turnId":"r-fda1","text":"Order "}
+data: {"turnId":"r-6d9b","text":"Order "}
 
 id: 7
 event: token
-data: {"turnId":"r-fda1","text":"ORD-1: "}
+data: {"turnId":"r-6d9b","text":"ORD-1: "}
 
 id: 8
 event: token
-data: {"turnId":"r-fda1","text":"SHIPPED, "}
+data: {"turnId":"r-6d9b","text":"SHIPPED, "}
 
 id: 9
 event: token
-data: {"turnId":"r-fda1","text":"shipment "}
+data: {"turnId":"r-6d9b","text":"shipment "}
 
 id: 10
 event: token
-data: {"turnId":"r-fda1","text":"SHP-1\nShipment "}
+data: {"turnId":"r-6d9b","text":"SHP-1\nShipment "}
 
 id: 11
 event: token
-data: {"turnId":"r-fda1","text":"SHP-1: "}
+data: {"turnId":"r-6d9b","text":"SHP-1: "}
 
 id: 12
 event: token
-data: {"turnId":"r-fda1","text":"IN "}
+data: {"turnId":"r-6d9b","text":"IN "}
 
 id: 13
 event: token
-data: {"turnId":"r-fda1","text":"TRANSIT, "}
+data: {"turnId":"r-6d9b","text":"TRANSIT, "}
 
 id: 14
 event: token
-data: {"turnId":"r-fda1","text":"arriving "}
+data: {"turnId":"r-6d9b","text":"arriving "}
 
 id: 15
 event: token
-data: {"turnId":"r-fda1","text":"2026-10-16"}
+data: {"turnId":"r-6d9b","text":"2026-10-16"}
 
 event: done
-data: {"turnId":"r-fda1","status":"DONE","answer":"Order ORD-1: SHIPPED, shipment SHP-1\nShipment SHP-1: IN TRANSIT, arriving 2026-10-16"}
+data: {"turnId":"r-6d9b","status":"DONE","answer":"Order ORD-1: SHIPPED, shipment SHP-1\nShipment SHP-1: IN TRANSIT, arriving 2026-10-16"}
 
 
 === a live stream on chaos: opened right after the POST, it waits for each step and each piece of the answer; the hang is cut off at the agent's toolTimeoutMs ===
-$ curl -s -X POST http://localhost:62588/runs -d '{"agent":"chaos","question":"Please hang while checking ORD-1"}'
+$ curl -s -X POST http://localhost:64430/runs -d '{"agent":"chaos","question":"Please hang while checking ORD-1"}'
 {
-  "turnId" : "r-d382",
-  "jobId" : "r-d382",
-  "conversationId" : "c-e7cb",
+  "turnId" : "r-4f54",
+  "jobId" : "r-4f54",
+  "conversationId" : "c-7f9b",
   "status" : "QUEUED"
 }
-$ curl -sN --max-time 5 http://localhost:62588/turns/r-d382/events
+$ curl -sN --max-time 5 http://localhost:64430/turns/r-4f54/events
 id: 1
 event: step
-data: {"turnId":"r-d382","span":1,"pass":1,"kind":"LLM","request":"pass 1","response":"ToolCall[toolName=hang_forever, input={orderId=ORD-1}]","status":"OK","ms":0,"attrs":{"question":"Please hang while checking ORD-1","tool":"hang_forever","orderId":"ORD-1"}}
+data: {"turnId":"r-4f54","span":1,"pass":1,"kind":"LLM","request":"pass 1","response":"ToolCall[toolName=hang_forever, input={orderId=ORD-1}]","status":"OK","ms":0,"attrs":{"question":"Please hang while checking ORD-1","tool":"hang_forever","orderId":"ORD-1"}}
 
 id: 2
 event: step
-data: {"turnId":"r-d382","span":2,"pass":1,"kind":"TOOL","request":"hang_forever {orderId=ORD-1}","response":"cut off after 1000 ms","status":"TIMEOUT","ms":1000,"attrs":{"tool":"hang_forever","orderId":"ORD-1","key":"r-d382/1"}}
+data: {"turnId":"r-4f54","span":2,"pass":1,"kind":"TOOL","request":"hang_forever {orderId=ORD-1}","response":"cut off after 1000 ms","status":"TIMEOUT","ms":1000,"attrs":{"tool":"hang_forever","orderId":"ORD-1","key":"r-4f54/1"}}
 
 id: 3
 event: step
-data: {"turnId":"r-d382","span":3,"pass":2,"kind":"LLM","request":"pass 2","response":"Done[]","status":"OK","ms":0,"attrs":{"question":"Please hang while checking ORD-1"}}
+data: {"turnId":"r-4f54","span":3,"pass":2,"kind":"LLM","request":"pass 2","response":"Done[]","status":"OK","ms":0,"attrs":{"question":"Please hang while checking ORD-1"}}
 
 id: 4
 event: token
-data: {"turnId":"r-d382","text":"Tool "}
+data: {"turnId":"r-4f54","text":"Tool "}
 
 id: 5
 event: token
-data: {"turnId":"r-d382","text":"hang_forever "}
+data: {"turnId":"r-4f54","text":"hang_forever "}
 
 id: 6
 event: token
-data: {"turnId":"r-d382","text":"TIMEOUT: "}
+data: {"turnId":"r-4f54","text":"TIMEOUT: "}
 
 id: 7
 event: token
-data: {"turnId":"r-d382","text":"cut "}
+data: {"turnId":"r-4f54","text":"cut "}
 
 id: 8
 event: token
-data: {"turnId":"r-d382","text":"off "}
+data: {"turnId":"r-4f54","text":"off "}
 
 id: 9
 event: token
-data: {"turnId":"r-d382","text":"after "}
+data: {"turnId":"r-4f54","text":"after "}
 
 id: 10
 event: token
-data: {"turnId":"r-d382","text":"1000 "}
+data: {"turnId":"r-4f54","text":"1000 "}
 
 id: 11
 event: token
-data: {"turnId":"r-d382","text":"ms"}
+data: {"turnId":"r-4f54","text":"ms"}
 
 event: done
-data: {"turnId":"r-d382","status":"DONE","answer":"Tool hang_forever TIMEOUT: cut off after 1000 ms"}
+data: {"turnId":"r-4f54","status":"DONE","answer":"Tool hang_forever TIMEOUT: cut off after 1000 ms"}
 
 
 === a follow-up turn in the same conversation: the model sees the earlier turn, the repeated call is not run again ===
-$ curl -s -X POST http://localhost:62588/runs -d '{"conversationId":"c-4404","question":"What is the status of order ORD-1, again?"}'
+$ curl -s -X POST http://localhost:64430/runs -d '{"conversationId":"c-0fd2","question":"What is the status of order ORD-1, again?"}'
 {
-  "turnId" : "r-a562",
-  "jobId" : "r-a562",
-  "conversationId" : "c-4404",
+  "turnId" : "r-ec1d",
+  "jobId" : "r-ec1d",
+  "conversationId" : "c-0fd2",
   "status" : "QUEUED"
 }
 (the spans are numbered on from the first turn; the TOOL span is DEDUPED and points at span 2 of the first turn; a reference names no id, so nothing chains and the turn is three rows:)
-$ curl -s http://localhost:62588/turns/r-a562
+$ curl -s http://localhost:64430/turns/r-ec1d
 {
-  "id" : "r-a562",
-  "conversationId" : "c-4404",
+  "id" : "r-ec1d",
+  "conversationId" : "c-0fd2",
   "agent" : "support",
   "question" : "What is the status of order ORD-1, again?",
   "answer" : "Order ORD-1: SHIPPED, shipment SHP-1",
   "status" : "DONE",
-  "claimedBy" : "48745",
+  "claimedBy" : "64360",
   "attempts" : 1,
-  "createdAt" : 1792045728969,
-  "updatedAt" : 1792045729474,
+  "createdAt" : 1792113821877,
+  "updatedAt" : 1792113822384,
   "spans" : [ {
-    "turnId" : "r-a562",
+    "turnId" : "r-ec1d",
     "span" : 6,
     "pass" : 1,
     "kind" : "LLM",
@@ -441,7 +485,7 @@ $ curl -s http://localhost:62588/turns/r-a562
       "orderId" : "ORD-1"
     }
   }, {
-    "turnId" : "r-a562",
+    "turnId" : "r-ec1d",
     "span" : 7,
     "pass" : 1,
     "kind" : "TOOL",
@@ -452,11 +496,11 @@ $ curl -s http://localhost:62588/turns/r-a562
     "attrs" : {
       "tool" : "order_status",
       "orderId" : "ORD-1",
-      "key" : "r-a562/6",
+      "key" : "r-ec1d/6",
       "ref" : "2"
     }
   }, {
-    "turnId" : "r-a562",
+    "turnId" : "r-ec1d",
     "span" : 8,
     "pass" : 2,
     "kind" : "LLM",
@@ -471,43 +515,43 @@ $ curl -s http://localhost:62588/turns/r-a562
 }
 
 (the worker's own log: it received the three turns, ran them, acked them; the server ran no loop)
-worker pid 48745 · lease 2000 ms · polling every 500 ms, ctrl-c stops it · streams to http://localhost:62588 · harness.db
-received r-fda1: attempt 1 · agent support · "What is the status of order ORD-1?"
-  1  LLM   pass 1 -> ToolCall[toolName=order_status, input={orderId=ORD-1}]  [OK 3 ms]
+worker pid 64360 · lease 2000 ms · polling every 500 ms, ctrl-c stops it · streams to http://localhost:64430 · harness.db
+received r-6d9b: attempt 1 · agent support · "What is the status of order ORD-1?"
+  1  LLM   pass 1 -> ToolCall[toolName=order_status, input={orderId=ORD-1}]  [OK 2 ms]
   2  TOOL  order_status {orderId=ORD-1} -> Order ORD-1: SHIPPED, shipment SHP-1  [OK 0 ms]
   3  LLM   pass 2 -> ToolCall[toolName=shipping_status, input={shipmentId=SHP-1}]  [OK 0 ms]
   4  TOOL  shipping_status {shipmentId=SHP-1} -> Shipment SHP-1: IN TRANSIT, arriving 2026-10-16  [OK 0 ms]
   5  LLM   pass 3 -> Done[]  [OK 0 ms]
 answer: Order ORD-1: SHIPPED, shipment SHP-1
 Shipment SHP-1: IN TRANSIT, arriving 2026-10-16
-done r-fda1 · 5 spans · 150 ms · DONE in harness.db · acked · handler calls: order_status=1, shipping_status=1
-received r-d382: attempt 1 · agent chaos · "Please hang while checking ORD-1"
+done r-6d9b · 5 spans · 139 ms · DONE in harness.db · acked · handler calls: order_status=1, shipping_status=1
+received r-4f54: attempt 1 · agent chaos · "Please hang while checking ORD-1"
   1  LLM   pass 1 -> ToolCall[toolName=hang_forever, input={orderId=ORD-1}]  [OK 0 ms]
   2  TOOL  hang_forever {orderId=ORD-1} -> cut off after 1000 ms  [TIMEOUT 1000 ms]
   3  LLM   pass 2 -> Done[]  [OK 0 ms]
 answer: Tool hang_forever TIMEOUT: cut off after 1000 ms
-done r-d382 · 3 spans · 1033 ms · DONE in harness.db · acked · handler calls: order_status=1, shipping_status=1
-received r-a562: attempt 1 · agent support · "What is the status of order ORD-1, again?"
+done r-4f54 · 3 spans · 1039 ms · DONE in harness.db · acked · handler calls: order_status=1, shipping_status=1
+received r-ec1d: attempt 1 · agent support · "What is the status of order ORD-1, again?"
   6  LLM   pass 1 -> ToolCall[toolName=order_status, input={orderId=ORD-1}]  [OK 0 ms]
   7  TOOL  order_status {orderId=ORD-1} -> unchanged, see step 2  [DEDUPED 0 ms]
   8  LLM   pass 2 -> Done[]  [OK 0 ms]
 answer: Order ORD-1: SHIPPED, shipment SHP-1
-done r-a562 · 3 spans · 20 ms · DONE in harness.db · acked · handler calls: order_status=1, shipping_status=1
+done r-ec1d · 3 spans · 25 ms · DONE in harness.db · acked · handler calls: order_status=1, shipping_status=1
 (worker stopped; the server stays up, so the next turns wait on the queue until a worker is started by hand)
 
 === two tools in one pass run together: a worker started with --slow shows wall < work, and the live stream shows the answer arriving word by word ===
-$ curl -s -X POST http://localhost:62588/runs -d '{"agent":"support","question":"Status of order ORD-2 and is product PRD-1 available?"}'
+$ curl -s -X POST http://localhost:64430/runs -d '{"agent":"support","question":"Status of order ORD-2 and is product PRD-1 available?"}'
 {
-  "turnId" : "r-ab46",
-  "jobId" : "r-ab46",
-  "conversationId" : "c-9619",
+  "turnId" : "r-373e",
+  "jobId" : "r-373e",
+  "conversationId" : "c-1e79",
   "status" : "QUEUED"
 }
-$ curl -sN --max-time 8 http://localhost:62588/turns/r-ab46/events > stream.txt &      (opened before the worker starts; what it received is printed after the worker ends)
+$ curl -sN --max-time 8 http://localhost:64430/turns/r-373e/events > stream.txt &      (opened before the worker starts; what it received is printed after the worker ends)
 (--slow gives every lookup 300 ms and every token 40 ms of simulated latency; two lookups in one pass take one sleep of wall time, not two:)
-$ java --enable-native-access=ALL-UNNAMED -cp "target/classes:target/lib/*" harness.cli.Main worker --once --slow --api http://localhost:62588
-worker pid 48797 · lease 2000 ms · once · slow: every lookup sleeps 300 ms and every token 40 ms (latency simulated) · streams to http://localhost:62588 · harness.db
-received r-ab46: attempt 1 · agent support · "Status of order ORD-2 and is product PRD-1 available?"
+$ java --enable-native-access=ALL-UNNAMED -cp "target/classes:target/lib/*" harness.cli.Main worker --once --slow --api http://localhost:64430
+worker pid 64410 · lease 2000 ms · once · slow: every lookup sleeps 300 ms and every token 40 ms (latency simulated) · streams to http://localhost:64430 · harness.db
+received r-373e: attempt 1 · agent support · "Status of order ORD-2 and is product PRD-1 available?"
   1  LLM   pass 1 -> ToolCalls[calls=[ToolCall[toolName=order_status, input={orderId=ORD-2}], ToolCall[toolName=stock_status, input={productId=PRD-1}]]]  [OK 3 ms]
   2  TOOL  order_status {orderId=ORD-2} -> Order ORD-2: PROCESSING  [OK 302 ms]
   3  TOOL  stock_status {productId=PRD-1} -> Product PRD-1: 42 units in stock  [OK 302 ms]
@@ -515,78 +559,78 @@ received r-ab46: attempt 1 · agent support · "Status of order ORD-2 and is pro
   5  LLM   pass 2 -> Done[]  [OK 0 ms]
 answer: Order ORD-2: PROCESSING
 Product PRD-1: 42 units in stock
-done r-ab46 · 5 spans · 804 ms · DONE in harness.db · acked · handler calls: order_status=1, stock_status=1
+done r-373e · 5 spans · 820 ms · DONE in harness.db · acked · handler calls: order_status=1, stock_status=1
 (the stream as the client saw it, every step and every piece of the answer as it happened, then done: the two lookups overlapped, the tokens arrived 40 ms apart)
 $ cat stream.txt
 id: 1
 event: step
-data: {"turnId":"r-ab46","span":1,"pass":1,"kind":"LLM","request":"pass 1","response":"ToolCalls[calls=[ToolCall[toolName=order_status, input={orderId=ORD-2}], ToolCall[toolName=stock_status, input={productId=PRD-1}]]]","status":"OK","ms":3,"attrs":{"question":"Status of order ORD-2 and is product PRD-1 available?","tool":"order_status,stock_status","orderId":"ORD-2","productId":"PRD-1"}}
+data: {"turnId":"r-373e","span":1,"pass":1,"kind":"LLM","request":"pass 1","response":"ToolCalls[calls=[ToolCall[toolName=order_status, input={orderId=ORD-2}], ToolCall[toolName=stock_status, input={productId=PRD-1}]]]","status":"OK","ms":3,"attrs":{"question":"Status of order ORD-2 and is product PRD-1 available?","tool":"order_status,stock_status","orderId":"ORD-2","productId":"PRD-1"}}
 
 id: 2
 event: step
-data: {"turnId":"r-ab46","span":2,"pass":1,"kind":"TOOL","request":"order_status {orderId=ORD-2}","response":"Order ORD-2: PROCESSING","status":"OK","ms":302,"attrs":{"tool":"order_status","orderId":"ORD-2","key":"r-ab46/1"}}
+data: {"turnId":"r-373e","span":2,"pass":1,"kind":"TOOL","request":"order_status {orderId=ORD-2}","response":"Order ORD-2: PROCESSING","status":"OK","ms":302,"attrs":{"tool":"order_status","orderId":"ORD-2","key":"r-373e/1"}}
 
 id: 3
 event: step
-data: {"turnId":"r-ab46","span":3,"pass":1,"kind":"TOOL","request":"stock_status {productId=PRD-1}","response":"Product PRD-1: 42 units in stock","status":"OK","ms":302,"attrs":{"tool":"stock_status","productId":"PRD-1","key":"r-ab46/1"}}
+data: {"turnId":"r-373e","span":3,"pass":1,"kind":"TOOL","request":"stock_status {productId=PRD-1}","response":"Product PRD-1: 42 units in stock","status":"OK","ms":302,"attrs":{"tool":"stock_status","productId":"PRD-1","key":"r-373e/1"}}
 
 id: 4
 event: step
-data: {"turnId":"r-ab46","span":4,"pass":1,"kind":"NOTE","request":"ran 2 tools together: wall 305 ms, work 604 ms","response":"","status":"OK","ms":305,"attrs":{}}
+data: {"turnId":"r-373e","span":4,"pass":1,"kind":"NOTE","request":"ran 2 tools together: wall 305 ms, work 604 ms","response":"","status":"OK","ms":305,"attrs":{}}
 
 id: 5
 event: step
-data: {"turnId":"r-ab46","span":5,"pass":2,"kind":"LLM","request":"pass 2","response":"Done[]","status":"OK","ms":0,"attrs":{"question":"Status of order ORD-2 and is product PRD-1 available?"}}
+data: {"turnId":"r-373e","span":5,"pass":2,"kind":"LLM","request":"pass 2","response":"Done[]","status":"OK","ms":0,"attrs":{"question":"Status of order ORD-2 and is product PRD-1 available?"}}
 
 id: 6
 event: token
-data: {"turnId":"r-ab46","text":"Order "}
+data: {"turnId":"r-373e","text":"Order "}
 
 id: 7
 event: token
-data: {"turnId":"r-ab46","text":"ORD-2: "}
+data: {"turnId":"r-373e","text":"ORD-2: "}
 
 id: 8
 event: token
-data: {"turnId":"r-ab46","text":"PROCESSING\nProduct "}
+data: {"turnId":"r-373e","text":"PROCESSING\nProduct "}
 
 id: 9
 event: token
-data: {"turnId":"r-ab46","text":"PRD-1: "}
+data: {"turnId":"r-373e","text":"PRD-1: "}
 
 id: 10
 event: token
-data: {"turnId":"r-ab46","text":"42 "}
+data: {"turnId":"r-373e","text":"42 "}
 
 id: 11
 event: token
-data: {"turnId":"r-ab46","text":"units "}
+data: {"turnId":"r-373e","text":"units "}
 
 id: 12
 event: token
-data: {"turnId":"r-ab46","text":"in "}
+data: {"turnId":"r-373e","text":"in "}
 
 id: 13
 event: token
-data: {"turnId":"r-ab46","text":"stock"}
+data: {"turnId":"r-373e","text":"stock"}
 
 event: done
-data: {"turnId":"r-ab46","status":"DONE","answer":"Order ORD-2: PROCESSING\nProduct PRD-1: 42 units in stock"}
+data: {"turnId":"r-373e","status":"DONE","answer":"Order ORD-2: PROCESSING\nProduct PRD-1: 42 units in stock"}
 
-$ curl -s http://localhost:62588/turns/r-ab46
+$ curl -s http://localhost:64430/turns/r-373e
 {
-  "id" : "r-ab46",
-  "conversationId" : "c-9619",
+  "id" : "r-373e",
+  "conversationId" : "c-1e79",
   "agent" : "support",
   "question" : "Status of order ORD-2 and is product PRD-1 available?",
   "answer" : "Order ORD-2: PROCESSING\nProduct PRD-1: 42 units in stock",
   "status" : "DONE",
-  "claimedBy" : "48797",
+  "claimedBy" : "64410",
   "attempts" : 1,
-  "createdAt" : 1792045730377,
-  "updatedAt" : 1792045731792,
+  "createdAt" : 1792113823291,
+  "updatedAt" : 1792113824681,
   "spans" : [ {
-    "turnId" : "r-ab46",
+    "turnId" : "r-373e",
     "span" : 1,
     "pass" : 1,
     "kind" : "LLM",
@@ -601,7 +645,7 @@ $ curl -s http://localhost:62588/turns/r-ab46
       "productId" : "PRD-1"
     }
   }, {
-    "turnId" : "r-ab46",
+    "turnId" : "r-373e",
     "span" : 2,
     "pass" : 1,
     "kind" : "TOOL",
@@ -612,10 +656,10 @@ $ curl -s http://localhost:62588/turns/r-ab46
     "attrs" : {
       "tool" : "order_status",
       "orderId" : "ORD-2",
-      "key" : "r-ab46/1"
+      "key" : "r-373e/1"
     }
   }, {
-    "turnId" : "r-ab46",
+    "turnId" : "r-373e",
     "span" : 3,
     "pass" : 1,
     "kind" : "TOOL",
@@ -626,10 +670,10 @@ $ curl -s http://localhost:62588/turns/r-ab46
     "attrs" : {
       "tool" : "stock_status",
       "productId" : "PRD-1",
-      "key" : "r-ab46/1"
+      "key" : "r-373e/1"
     }
   }, {
-    "turnId" : "r-ab46",
+    "turnId" : "r-373e",
     "span" : 4,
     "pass" : 1,
     "kind" : "NOTE",
@@ -639,7 +683,7 @@ $ curl -s http://localhost:62588/turns/r-ab46
     "ms" : 305,
     "attrs" : { }
   }, {
-    "turnId" : "r-ab46",
+    "turnId" : "r-373e",
     "span" : 5,
     "pass" : 2,
     "kind" : "LLM",
@@ -655,40 +699,40 @@ $ curl -s http://localhost:62588/turns/r-ab46
 
 === sub-agents: an agent as a tool; the concierge hands the shipment question to the logistics agent ===
 (ask_logistics is a tool of type agent: its call runs the logistics agent's own loop inside the tool call, in the same turn, and only the answer comes back)
-$ curl -s -X POST http://localhost:62588/runs -d '{"agent":"concierge","question":"Where is shipment SHP-1 for my order?"}'
+$ curl -s -X POST http://localhost:64430/runs -d '{"agent":"concierge","question":"Where is shipment SHP-1 for my order?"}'
 {
-  "turnId" : "r-e0ee",
-  "jobId" : "r-e0ee",
-  "conversationId" : "c-9a7f",
+  "turnId" : "r-3991",
+  "jobId" : "r-3991",
+  "conversationId" : "c-deff",
   "status" : "QUEUED"
 }
 (the worker prints the child's rows indented: the parent's decision, the child's three rows, the AGENT row with the child's answer, the parent's done)
-$ java --enable-native-access=ALL-UNNAMED -cp "target/classes:target/lib/*" harness.cli.Main worker --once --api http://localhost:62588
-worker pid 48806 · lease 2000 ms · once · streams to http://localhost:62588 · harness.db
-received r-e0ee: attempt 1 · agent concierge · "Where is shipment SHP-1 for my order?"
+$ java --enable-native-access=ALL-UNNAMED -cp "target/classes:target/lib/*" harness.cli.Main worker --once --api http://localhost:64430
+worker pid 64420 · lease 2000 ms · once · streams to http://localhost:64430 · harness.db
+received r-3991: attempt 1 · agent concierge · "Where is shipment SHP-1 for my order?"
   1  LLM   pass 1 -> ToolCall[toolName=ask_logistics, input={goal=Where is shipment SHP-1 for my order?}]  [OK 2 ms]
     2  LLM   pass 1 -> ToolCall[toolName=shipping_status, input={shipmentId=SHP-1}]  [OK 0 ms]
     3  TOOL  shipping_status {shipmentId=SHP-1} -> Shipment SHP-1: IN TRANSIT, arriving 2026-10-16  [OK 0 ms]
     4  LLM   pass 2 -> Done[]  [OK 0 ms]
-  5  AGENT  ask_logistics {goal=Where is shipment SHP-1 for my order?} -> Shipment SHP-1: IN TRANSIT, arriving 2026-10-16  [OK 10 ms]
+  5  AGENT  ask_logistics {goal=Where is shipment SHP-1 for my order?} -> Shipment SHP-1: IN TRANSIT, arriving 2026-10-16  [OK 9 ms]
   6  LLM   pass 2 -> Done[]  [OK 0 ms]
 answer: Shipment SHP-1: IN TRANSIT, arriving 2026-10-16
-done r-e0ee · 6 spans · 123 ms · DONE in harness.db · acked · handler calls: shipping_status=1
+done r-3991 · 6 spans · 131 ms · DONE in harness.db · acked · handler calls: shipping_status=1
 (the same rows over HTTP: the child's spans carry parent and depth in attrs, the AGENT span carries the child's answer, and the turn's answer is that answer)
-$ curl -s http://localhost:62588/turns/r-e0ee
+$ curl -s http://localhost:64430/turns/r-3991
 {
-  "id" : "r-e0ee",
-  "conversationId" : "c-9a7f",
+  "id" : "r-3991",
+  "conversationId" : "c-deff",
   "agent" : "concierge",
   "question" : "Where is shipment SHP-1 for my order?",
   "answer" : "Shipment SHP-1: IN TRANSIT, arriving 2026-10-16",
   "status" : "DONE",
-  "claimedBy" : "48806",
+  "claimedBy" : "64420",
   "attempts" : 1,
-  "createdAt" : 1792045732185,
-  "updatedAt" : 1792045732869,
+  "createdAt" : 1792113825074,
+  "updatedAt" : 1792113825766,
   "spans" : [ {
-    "turnId" : "r-e0ee",
+    "turnId" : "r-3991",
     "span" : 1,
     "pass" : 1,
     "kind" : "LLM",
@@ -702,7 +746,7 @@ $ curl -s http://localhost:62588/turns/r-e0ee
       "goal" : "Where is shipment SHP-1 for my order?"
     }
   }, {
-    "turnId" : "r-e0ee",
+    "turnId" : "r-3991",
     "span" : 2,
     "pass" : 1,
     "kind" : "LLM",
@@ -718,7 +762,7 @@ $ curl -s http://localhost:62588/turns/r-e0ee
       "depth" : "1"
     }
   }, {
-    "turnId" : "r-e0ee",
+    "turnId" : "r-3991",
     "span" : 3,
     "pass" : 1,
     "kind" : "TOOL",
@@ -729,12 +773,12 @@ $ curl -s http://localhost:62588/turns/r-e0ee
     "attrs" : {
       "tool" : "shipping_status",
       "shipmentId" : "SHP-1",
-      "key" : "r-e0ee/2",
+      "key" : "r-3991/2",
       "parent" : "1",
       "depth" : "1"
     }
   }, {
-    "turnId" : "r-e0ee",
+    "turnId" : "r-3991",
     "span" : 4,
     "pass" : 2,
     "kind" : "LLM",
@@ -748,21 +792,21 @@ $ curl -s http://localhost:62588/turns/r-e0ee
       "depth" : "1"
     }
   }, {
-    "turnId" : "r-e0ee",
+    "turnId" : "r-3991",
     "span" : 5,
     "pass" : 1,
     "kind" : "AGENT",
     "request" : "ask_logistics {goal=Where is shipment SHP-1 for my order?}",
     "response" : "Shipment SHP-1: IN TRANSIT, arriving 2026-10-16",
     "status" : "OK",
-    "ms" : 10,
+    "ms" : 9,
     "attrs" : {
       "tool" : "ask_logistics",
       "goal" : "Where is shipment SHP-1 for my order?",
-      "key" : "r-e0ee/1"
+      "key" : "r-3991/1"
     }
   }, {
-    "turnId" : "r-e0ee",
+    "turnId" : "r-3991",
     "span" : 6,
     "pass" : 2,
     "kind" : "LLM",
@@ -777,82 +821,293 @@ $ curl -s http://localhost:62588/turns/r-e0ee
 }
 
 === sub-agents: the depth cap; an agent that lists itself as a tool ===
-$ curl -s -X POST http://localhost:62588/runs -d '{"agent":"loop","question":"loop, please"}'
+$ curl -s -X POST http://localhost:64430/runs -d '{"agent":"loop","question":"loop, please"}'
 {
-  "turnId" : "r-1e43",
-  "jobId" : "r-1e43",
-  "conversationId" : "c-6e13",
+  "turnId" : "r-f68e",
+  "jobId" : "r-f68e",
+  "conversationId" : "c-05d2",
   "status" : "QUEUED"
 }
 (loop delegates to loop delegates to loop; the loop at depth 2 may not delegate again, so its call is refused with an ERROR row, depth limit, and the answer climbs back up)
-$ java --enable-native-access=ALL-UNNAMED -cp "target/classes:target/lib/*" harness.cli.Main worker --once --api http://localhost:62588
-worker pid 48814 · lease 2000 ms · once · streams to http://localhost:62588 · harness.db
-received r-1e43: attempt 1 · agent loop · "loop, please"
-  1  LLM   pass 1 -> ToolCall[toolName=ask_loop, input={goal=loop, please}]  [OK 2 ms]
+$ java --enable-native-access=ALL-UNNAMED -cp "target/classes:target/lib/*" harness.cli.Main worker --once --api http://localhost:64430
+worker pid 64427 · lease 2000 ms · once · streams to http://localhost:64430 · harness.db
+received r-f68e: attempt 1 · agent loop · "loop, please"
+  1  LLM   pass 1 -> ToolCall[toolName=ask_loop, input={goal=loop, please}]  [OK 3 ms]
     2  LLM   pass 1 -> ToolCall[toolName=ask_loop, input={goal=loop, please}]  [OK 0 ms]
       3  LLM   pass 1 -> ToolCall[toolName=ask_loop, input={goal=loop, please}]  [OK 0 ms]
       4  AGENT  ask_loop {goal=loop, please} -> Tool failed: depth limit: a loop at depth 2 cannot delegate  [ERROR 0 ms]
       5  LLM   pass 2 -> Done[]  [OK 0 ms]
-    6  AGENT  ask_loop {goal=loop, please} -> Tool ask_loop ERROR: Tool failed: depth limit: a loop at depth 2 cannot delegate  [OK 12 ms]
+    6  AGENT  ask_loop {goal=loop, please} -> Tool ask_loop ERROR: Tool failed: depth limit: a loop at depth 2 cannot delegate  [OK 8 ms]
     7  LLM   pass 2 -> Done[]  [OK 0 ms]
-  8  AGENT  ask_loop {goal=loop, please} -> Tool ask_loop ERROR: Tool failed: depth limit: a loop at depth 2 cannot delegate  [OK 21 ms]
+  8  AGENT  ask_loop {goal=loop, please} -> Tool ask_loop ERROR: Tool failed: depth limit: a loop at depth 2 cannot delegate  [OK 16 ms]
   9  LLM   pass 2 -> Done[]  [OK 0 ms]
 answer: Tool ask_loop ERROR: Tool failed: depth limit: a loop at depth 2 cannot delegate
-done r-1e43 · 9 spans · 173 ms · DONE in harness.db · acked · handler calls: none
+done r-f68e · 9 spans · 142 ms · DONE in harness.db · acked · handler calls: none
+
+=== sandboxing: the sandbox agent's tools run in a throwaway container; three try to reach the rest of the system and fail, one hangs and is killed at the clock ===
+$ docker image inspect alpine:3.20 >/dev/null 2>&1 || docker pull alpine:3.20      (the image, pulled once; every call starts a new container from it and removes it after)
+(alpine:3.20 is here)
+(the worker is started with a secret in its environment; the three tools in one pass run together, each in a container of its own: no HARNESS_SECRET and nothing else of the worker's environment in the box, no network, a read-only root. Each attempt is a row with its status, and the loop goes on:)
+$ curl -s -X POST http://localhost:64430/runs -d '{"agent":"sandbox","question":"read the secret, call out to the network, write to the disk"}'
+{
+  "turnId" : "r-6e0d",
+  "jobId" : "r-6e0d",
+  "conversationId" : "c-b305",
+  "status" : "QUEUED"
+}
+$ HARNESS_SECRET=hunter2 java --enable-native-access=ALL-UNNAMED -cp "target/classes:target/lib/*" harness.cli.Main worker --once --api http://localhost:64430
+worker pid 64437 · lease 2000 ms · once · streams to http://localhost:64430 · harness.db
+received r-6e0d: attempt 1 · agent sandbox · "read the secret, call out to the network, write to the disk"
+  1  LLM   pass 1 -> ToolCalls[calls=[ToolCall[toolName=read_secrets, input={}], ToolCall[toolName=call_out, input={}], ToolCall[toolName=write_disk, input={}]]]  [OK 3 ms]
+  2  TOOL  read_secrets {} -> no HARNESS_SECRET in the box; its whole environment is: HOSTNAME SHLVL HOME PATH PWD  [OK 430 ms]
+  3  TOOL  call_out {} -> Tool failed: exit 1: wget: can't connect to remote host (1.1.1.1): Network unreachable  [ERROR 427 ms]
+  4  TOOL  write_disk {} -> Tool failed: exit 1: sh: line 0: can't create /etc/owned: Read-only file system  [ERROR 427 ms]
+  5  NOTE  ran 3 tools together: wall 432 ms, work 1284 ms  [OK 432 ms]
+  6  LLM   pass 2 -> Done[]  [OK 0 ms]
+answer: no HARNESS_SECRET in the box; its whole environment is: HOSTNAME SHLVL HOME PATH PWD
+Tool call_out ERROR: Tool failed: exit 1: wget: can't connect to remote host (1.1.1.1): Network unreachable
+Tool write_disk ERROR: Tool failed: exit 1: sh: line 0: can't create /etc/owned: Read-only file system
+done r-6e0d · 6 spans · 602 ms · DONE in harness.db · acked · handler calls: call_out=1, read_secrets=1, write_disk=1
+$ curl -s http://localhost:64430/turns/r-6e0d
+{
+  "id" : "r-6e0d",
+  "conversationId" : "c-b305",
+  "agent" : "sandbox",
+  "question" : "read the secret, call out to the network, write to the disk",
+  "answer" : "no HARNESS_SECRET in the box; its whole environment is: HOSTNAME SHLVL HOME PATH PWD\nTool call_out ERROR: Tool failed: exit 1: wget: can't connect to remote host (1.1.1.1): Network unreachable\nTool write_disk ERROR: Tool failed: exit 1: sh: line 0: can't create /etc/owned: Read-only file system",
+  "status" : "DONE",
+  "claimedBy" : "64437",
+  "attempts" : 1,
+  "createdAt" : 1792113827297,
+  "updatedAt" : 1792113828440,
+  "spans" : [ {
+    "turnId" : "r-6e0d",
+    "span" : 1,
+    "pass" : 1,
+    "kind" : "LLM",
+    "request" : "pass 1",
+    "response" : "ToolCalls[calls=[ToolCall[toolName=read_secrets, input={}], ToolCall[toolName=call_out, input={}], ToolCall[toolName=write_disk, input={}]]]",
+    "status" : "OK",
+    "ms" : 3,
+    "attrs" : {
+      "question" : "read the secret, call out to the network, write to the disk",
+      "tool" : "read_secrets,call_out,write_disk"
+    }
+  }, {
+    "turnId" : "r-6e0d",
+    "span" : 2,
+    "pass" : 1,
+    "kind" : "TOOL",
+    "request" : "read_secrets {}",
+    "response" : "no HARNESS_SECRET in the box; its whole environment is: HOSTNAME SHLVL HOME PATH PWD",
+    "status" : "OK",
+    "ms" : 430,
+    "attrs" : {
+      "tool" : "read_secrets",
+      "key" : "r-6e0d/1"
+    }
+  }, {
+    "turnId" : "r-6e0d",
+    "span" : 3,
+    "pass" : 1,
+    "kind" : "TOOL",
+    "request" : "call_out {}",
+    "response" : "Tool failed: exit 1: wget: can't connect to remote host (1.1.1.1): Network unreachable",
+    "status" : "ERROR",
+    "ms" : 427,
+    "attrs" : {
+      "tool" : "call_out",
+      "key" : "r-6e0d/1"
+    }
+  }, {
+    "turnId" : "r-6e0d",
+    "span" : 4,
+    "pass" : 1,
+    "kind" : "TOOL",
+    "request" : "write_disk {}",
+    "response" : "Tool failed: exit 1: sh: line 0: can't create /etc/owned: Read-only file system",
+    "status" : "ERROR",
+    "ms" : 427,
+    "attrs" : {
+      "tool" : "write_disk",
+      "key" : "r-6e0d/1"
+    }
+  }, {
+    "turnId" : "r-6e0d",
+    "span" : 5,
+    "pass" : 1,
+    "kind" : "NOTE",
+    "request" : "ran 3 tools together: wall 432 ms, work 1284 ms",
+    "response" : "",
+    "status" : "OK",
+    "ms" : 432,
+    "attrs" : { }
+  }, {
+    "turnId" : "r-6e0d",
+    "span" : 6,
+    "pass" : 2,
+    "kind" : "LLM",
+    "request" : "pass 2",
+    "response" : "Done[]",
+    "status" : "OK",
+    "ms" : 0,
+    "attrs" : {
+      "question" : "read the secret, call out to the network, write to the disk"
+    }
+  } ]
+}
+(honest work and a runaway in one pass: fingerprint hashes the id inside its box and returns; hang_in_box sleeps for a minute and is cut off at the agent's toolTimeoutMs, and the runner kills its container by name, because the docker command is only a client:)
+$ curl -s -X POST http://localhost:64430/runs -d '{"agent":"sandbox","question":"fingerprint order ORD-1 and hang in the box"}'
+{
+  "turnId" : "r-3cd6",
+  "jobId" : "r-3cd6",
+  "conversationId" : "c-8cad",
+  "status" : "QUEUED"
+}
+$ java --enable-native-access=ALL-UNNAMED -cp "target/classes:target/lib/*" harness.cli.Main worker --once --api http://localhost:64430
+worker pid 64450 · lease 2000 ms · once · streams to http://localhost:64430 · harness.db
+received r-3cd6: attempt 1 · agent sandbox · "fingerprint order ORD-1 and hang in the box"
+  1  LLM   pass 1 -> ToolCalls[calls=[ToolCall[toolName=fingerprint, input={orderId=ORD-1}], ToolCall[toolName=hang_in_box, input={}]]]  [OK 2 ms]
+  2  TOOL  fingerprint {orderId=ORD-1} -> f7f8bfa06d24d43c  [OK 351 ms]
+  3  TOOL  hang_in_box {} -> cut off after 3000 ms  [TIMEOUT 3000 ms]
+  4  NOTE  ran 2 tools together: wall 3003 ms, work 3351 ms  [OK 3003 ms]
+  5  LLM   pass 2 -> Done[]  [OK 0 ms]
+answer: f7f8bfa06d24d43c
+Tool hang_in_box TIMEOUT: cut off after 3000 ms
+done r-3cd6 · 5 spans · 3140 ms · DONE in harness.db · acked · handler calls: fingerprint=1, hang_in_box=1
+$ curl -s http://localhost:64430/turns/r-3cd6
+{
+  "id" : "r-3cd6",
+  "conversationId" : "c-8cad",
+  "agent" : "sandbox",
+  "question" : "fingerprint order ORD-1 and hang in the box",
+  "answer" : "f7f8bfa06d24d43c\nTool hang_in_box TIMEOUT: cut off after 3000 ms",
+  "status" : "DONE",
+  "claimedBy" : "64450",
+  "attempts" : 1,
+  "createdAt" : 1792113828809,
+  "updatedAt" : 1792113832510,
+  "spans" : [ {
+    "turnId" : "r-3cd6",
+    "span" : 1,
+    "pass" : 1,
+    "kind" : "LLM",
+    "request" : "pass 1",
+    "response" : "ToolCalls[calls=[ToolCall[toolName=fingerprint, input={orderId=ORD-1}], ToolCall[toolName=hang_in_box, input={}]]]",
+    "status" : "OK",
+    "ms" : 2,
+    "attrs" : {
+      "question" : "fingerprint order ORD-1 and hang in the box",
+      "tool" : "fingerprint,hang_in_box",
+      "orderId" : "ORD-1"
+    }
+  }, {
+    "turnId" : "r-3cd6",
+    "span" : 2,
+    "pass" : 1,
+    "kind" : "TOOL",
+    "request" : "fingerprint {orderId=ORD-1}",
+    "response" : "f7f8bfa06d24d43c",
+    "status" : "OK",
+    "ms" : 351,
+    "attrs" : {
+      "tool" : "fingerprint",
+      "orderId" : "ORD-1",
+      "key" : "r-3cd6/1"
+    }
+  }, {
+    "turnId" : "r-3cd6",
+    "span" : 3,
+    "pass" : 1,
+    "kind" : "TOOL",
+    "request" : "hang_in_box {}",
+    "response" : "cut off after 3000 ms",
+    "status" : "TIMEOUT",
+    "ms" : 3000,
+    "attrs" : {
+      "tool" : "hang_in_box",
+      "key" : "r-3cd6/1"
+    }
+  }, {
+    "turnId" : "r-3cd6",
+    "span" : 4,
+    "pass" : 1,
+    "kind" : "NOTE",
+    "request" : "ran 2 tools together: wall 3003 ms, work 3351 ms",
+    "response" : "",
+    "status" : "OK",
+    "ms" : 3003,
+    "attrs" : { }
+  }, {
+    "turnId" : "r-3cd6",
+    "span" : 5,
+    "pass" : 2,
+    "kind" : "LLM",
+    "request" : "pass 2",
+    "response" : "Done[]",
+    "status" : "OK",
+    "ms" : 0,
+    "attrs" : {
+      "question" : "fingerprint order ORD-1 and hang in the box"
+    }
+  } ]
+}
+$ docker ps -a --filter name=harness- --format "{{.Names}} {{.Status}}"      (nothing left: --rm removed each container at its end, and the hung one was killed)
+(no containers left)
 
 === durability: the queue, the lease, the dead worker ===
 (submit writes the turn row QUEUED and its queue message without HTTP, and comes back with the id:)
 $ java --enable-native-access=ALL-UNNAMED -cp "target/classes:target/lib/*" harness.cli.Main submit --agent support "What is the status of order ORD-1?"
-submitted r-26e4 · QUEUED in harness.db · agent support · "What is the status of order ORD-1?"
-$ curl -s http://localhost:62588/turns/r-26e4
+submitted r-9329 · QUEUED in harness.db · agent support · "What is the status of order ORD-1?"
+$ curl -s http://localhost:64430/turns/r-9329
 {
-  "id" : "r-26e4",
-  "conversationId" : "c-adda",
+  "id" : "r-9329",
+  "conversationId" : "c-6222",
   "agent" : "support",
   "question" : "What is the status of order ORD-1?",
   "answer" : null,
   "status" : "QUEUED",
   "claimedBy" : null,
   "attempts" : 0,
-  "createdAt" : 1792045734821,
-  "updatedAt" : 1792045734821,
+  "createdAt" : 1792113834392,
+  "updatedAt" : 1792113834392,
   "spans" : [ ]
 }
 (a worker takes it with a 2000 ms lease and dies right after its 2nd row is persisted: exit 3, no ack; the order lookup ran once in this process, so the crash line counts order_status=1)
-$ java --enable-native-access=ALL-UNNAMED -cp "target/classes:target/lib/*" harness.cli.Main worker --once --crash-after 2 --visibility-ms 2000 --api http://localhost:62588
-worker pid 48822 · lease 2000 ms · once · streams to http://localhost:62588 · harness.db
-received r-26e4: attempt 1 · agent support · "What is the status of order ORD-1?"
+$ java --enable-native-access=ALL-UNNAMED -cp "target/classes:target/lib/*" harness.cli.Main worker --once --crash-after 2 --visibility-ms 2000 --api http://localhost:64430
+worker pid 64467 · lease 2000 ms · once · streams to http://localhost:64430 · harness.db
+received r-9329: attempt 1 · agent support · "What is the status of order ORD-1?"
   1  LLM   pass 1 -> ToolCall[toolName=order_status, input={orderId=ORD-1}]  [OK 2 ms]
   2  TOOL  order_status {orderId=ORD-1} -> Order ORD-1: SHIPPED, shipment SHP-1  [OK 0 ms]
-crash: exit 3 right after row 2 of turn r-26e4 was persisted (simulated) · handler calls: order_status=1
+crash: exit 3 right after row 2 of turn r-9329 was persisted (simulated) · handler calls: order_status=1
 (process exited with code 3; the turn row says RUNNING, the message is still queued but hidden until the lease runs out)
 $ sleep 2
 (the lease has run out, so the next worker receives the same message again and resumes from the last saved step: it does not run the saved order_status call again, it continues the chain at pass 2, reads SHP-1 in the saved result, asks for the shipment and says done; its footer counts shipping_status=1 only, because order_status ran in the process that died:)
-$ java --enable-native-access=ALL-UNNAMED -cp "target/classes:target/lib/*" harness.cli.Main worker --once --api http://localhost:62588
-worker pid 48826 · lease 2000 ms · once · streams to http://localhost:62588 · harness.db
-received again: attempt 2, lease had expired · r-26e4 resumes from step 2
+$ java --enable-native-access=ALL-UNNAMED -cp "target/classes:target/lib/*" harness.cli.Main worker --once --api http://localhost:64430
+worker pid 64469 · lease 2000 ms · once · streams to http://localhost:64430 · harness.db
+received again: attempt 2, lease had expired · r-9329 resumes from step 2
   3  NOTE  resumed from step 2  [OK 0 ms]
   4  LLM   pass 2 -> ToolCall[toolName=shipping_status, input={shipmentId=SHP-1}]  [OK 1 ms]
   5  TOOL  shipping_status {shipmentId=SHP-1} -> Shipment SHP-1: IN TRANSIT, arriving 2026-10-16  [OK 0 ms]
   6  LLM   pass 3 -> Done[]  [OK 0 ms]
 answer: Order ORD-1: SHIPPED, shipment SHP-1
 Shipment SHP-1: IN TRANSIT, arriving 2026-10-16
-done r-26e4 · 6 spans · 114 ms · DONE in harness.db · acked · handler calls: shipping_status=1
+done r-9329 · 6 spans · 94 ms · DONE in harness.db · acked · handler calls: shipping_status=1
 (the API reads the same rows, whoever wrote them: DONE, attempt 2, claimed by the second worker's pid, all six spans, the answer with both lines)
-$ curl -s http://localhost:62588/turns/r-26e4
+$ curl -s http://localhost:64430/turns/r-9329
 {
-  "id" : "r-26e4",
-  "conversationId" : "c-adda",
+  "id" : "r-9329",
+  "conversationId" : "c-6222",
   "agent" : "support",
   "question" : "What is the status of order ORD-1?",
   "answer" : "Order ORD-1: SHIPPED, shipment SHP-1\nShipment SHP-1: IN TRANSIT, arriving 2026-10-16",
   "status" : "DONE",
-  "claimedBy" : "48826",
+  "claimedBy" : "64469",
   "attempts" : 2,
-  "createdAt" : 1792045734821,
-  "updatedAt" : 1792045738766,
+  "createdAt" : 1792113834392,
+  "updatedAt" : 1792113838090,
   "spans" : [ {
-    "turnId" : "r-26e4",
+    "turnId" : "r-9329",
     "span" : 1,
     "pass" : 1,
     "kind" : "LLM",
@@ -866,7 +1121,7 @@ $ curl -s http://localhost:62588/turns/r-26e4
       "orderId" : "ORD-1"
     }
   }, {
-    "turnId" : "r-26e4",
+    "turnId" : "r-9329",
     "span" : 2,
     "pass" : 1,
     "kind" : "TOOL",
@@ -877,10 +1132,10 @@ $ curl -s http://localhost:62588/turns/r-26e4
     "attrs" : {
       "tool" : "order_status",
       "orderId" : "ORD-1",
-      "key" : "r-26e4/1"
+      "key" : "r-9329/1"
     }
   }, {
-    "turnId" : "r-26e4",
+    "turnId" : "r-9329",
     "span" : 3,
     "pass" : 1,
     "kind" : "NOTE",
@@ -890,7 +1145,7 @@ $ curl -s http://localhost:62588/turns/r-26e4
     "ms" : 0,
     "attrs" : { }
   }, {
-    "turnId" : "r-26e4",
+    "turnId" : "r-9329",
     "span" : 4,
     "pass" : 2,
     "kind" : "LLM",
@@ -904,7 +1159,7 @@ $ curl -s http://localhost:62588/turns/r-26e4
       "shipmentId" : "SHP-1"
     }
   }, {
-    "turnId" : "r-26e4",
+    "turnId" : "r-9329",
     "span" : 5,
     "pass" : 2,
     "kind" : "TOOL",
@@ -915,10 +1170,10 @@ $ curl -s http://localhost:62588/turns/r-26e4
     "attrs" : {
       "tool" : "shipping_status",
       "shipmentId" : "SHP-1",
-      "key" : "r-26e4/4"
+      "key" : "r-9329/4"
     }
   }, {
-    "turnId" : "r-26e4",
+    "turnId" : "r-9329",
     "span" : 6,
     "pass" : 3,
     "kind" : "LLM",
@@ -933,7 +1188,7 @@ $ curl -s http://localhost:62588/turns/r-26e4
 }
 
 === eval over HTTP: POST /evals scores the golden set in the server; two FAILs left in on purpose ===
-$ curl -s -X POST http://localhost:62588/evals
+$ curl -s -X POST http://localhost:64430/evals
 {
   "cases" : [
     {
@@ -1009,7 +1264,7 @@ $ curl -s -X POST http://localhost:62588/evals
         "hang_forever"
       ],
       "passes" : 2,
-      "ms" : 1004,
+      "ms" : 1005,
       "answer" : "Tool hang_forever TIMEOUT: cut off after 1000 ms",
       "failures" : [ ]
     },
@@ -1036,7 +1291,7 @@ $ curl -s -X POST http://localhost:62588/evals
         "stock_status"
       ],
       "passes" : 2,
-      "ms" : 2,
+      "ms" : 3,
       "answer" : "Order ORD-2: PROCESSING\nProduct PRD-1: 42 units in stock",
       "failures" : [ ]
     },
@@ -1117,9 +1372,9 @@ $ curl -s -X POST http://localhost:62588/evals
     " 3  PASS  support    Is product PRD-2 available?                             ran stock_status                 2 passes      0 ms",
     " 4  PASS  support    What is the status of order ORD-99?                     ran order_status                 2 passes      0 ms",
     " 5  PASS  support    What is the weather today?                              ran no tool                      1 pass       0 ms",
-    " 6  PASS  chaos      Please hang while checking ORD-1                        ran hang_forever                 2 passes   1004 ms",
+    " 6  PASS  chaos      Please hang while checking ORD-1                        ran hang_forever                 2 passes   1005 ms",
     " 7  PASS  chaos      boom                                                    ran throw_boom                   2 passes      0 ms",
-    " 8  PASS  support    Status of order ORD-2 and is product PRD-1 available?   ran order_status,stock_status    2 passes      2 ms",
+    " 8  PASS  support    Status of order ORD-2 and is product PRD-1 available?   ran order_status,stock_status    2 passes      3 ms",
     " 9  PASS  inventory  How many PRD-1 do we have in stock?                     ran stock_status                 2 passes      0 ms",
     "10  PASS  inventory  refund order ORD-1                                      ran no tool                      1 pass       0 ms",
     "11  FAIL  support    reorder ORD-1                                           ran order_status,shipping_status  3 passes      0 ms  tool_choice: expected [] got [order_status, shipping_status]; answer: expected \"No tool\" got \"Order ORD-1: SHIPPED, shipment SHP-1 | Shipment SHP-1: IN TRANSIT, arriving 2026-10-16\"",
@@ -1130,158 +1385,227 @@ $ curl -s -X POST http://localhost:62588/evals
 }
 
 (the server's own log, one line per request:)
-listening on http://localhost:62588 · agents/ tools/ harness.db · POST /runs queues a turn for a worker · ctrl-c stops it
+listening on http://localhost:64430 · agents/ tools/ harness.db · POST /runs queues a turn for a worker · ctrl-c stops it
 GET /agents -> 200
 GET /tools -> 200
 POST /runs -> 202
-POST /turns/r-fda1/events -> 204
-POST /turns/r-fda1/events -> 204
-POST /turns/r-fda1/events -> 204
-POST /turns/r-fda1/events -> 204
-POST /turns/r-fda1/events -> 204
-POST /turns/r-fda1/events -> 204
-POST /turns/r-fda1/events -> 204
-POST /turns/r-fda1/events -> 204
-POST /turns/r-fda1/events -> 204
-POST /turns/r-fda1/events -> 204
-POST /turns/r-fda1/events -> 204
-POST /turns/r-fda1/events -> 204
-POST /turns/r-fda1/events -> 204
-POST /turns/r-fda1/events -> 204
-POST /turns/r-fda1/events -> 204
-POST /turns/r-fda1/events -> 204
-GET /turns/r-fda1 -> 200
-GET /turns/r-fda1/events -> 200
-GET /turns/r-fda1/events -> 200
+POST /turns/r-6d9b/events -> 204
+POST /turns/r-6d9b/events -> 204
+POST /turns/r-6d9b/events -> 204
+POST /turns/r-6d9b/events -> 204
+POST /turns/r-6d9b/events -> 204
+POST /turns/r-6d9b/events -> 204
+POST /turns/r-6d9b/events -> 204
+POST /turns/r-6d9b/events -> 204
+POST /turns/r-6d9b/events -> 204
+POST /turns/r-6d9b/events -> 204
+POST /turns/r-6d9b/events -> 204
+POST /turns/r-6d9b/events -> 204
+POST /turns/r-6d9b/events -> 204
+POST /turns/r-6d9b/events -> 204
+POST /turns/r-6d9b/events -> 204
+POST /turns/r-6d9b/events -> 204
+GET /turns/r-6d9b -> 200
+GET /turns/r-6d9b/events -> 200
+GET /turns/r-6d9b/events -> 200
 POST /runs -> 202
-POST /turns/r-d382/events -> 204
-POST /turns/r-d382/events -> 204
-POST /turns/r-d382/events -> 204
-POST /turns/r-d382/events -> 204
-POST /turns/r-d382/events -> 204
-POST /turns/r-d382/events -> 204
-POST /turns/r-d382/events -> 204
-POST /turns/r-d382/events -> 204
-POST /turns/r-d382/events -> 204
-POST /turns/r-d382/events -> 204
-POST /turns/r-d382/events -> 204
-POST /turns/r-d382/events -> 204
-GET /turns/r-d382/events -> 200
+POST /turns/r-4f54/events -> 204
+POST /turns/r-4f54/events -> 204
+POST /turns/r-4f54/events -> 204
+POST /turns/r-4f54/events -> 204
+POST /turns/r-4f54/events -> 204
+POST /turns/r-4f54/events -> 204
+POST /turns/r-4f54/events -> 204
+POST /turns/r-4f54/events -> 204
+POST /turns/r-4f54/events -> 204
+POST /turns/r-4f54/events -> 204
+POST /turns/r-4f54/events -> 204
+GET /turns/r-4f54/events -> 200
+POST /turns/r-4f54/events -> 204
 POST /runs -> 202
-POST /turns/r-a562/events -> 204
-POST /turns/r-a562/events -> 204
-POST /turns/r-a562/events -> 204
-POST /turns/r-a562/events -> 204
-POST /turns/r-a562/events -> 204
-POST /turns/r-a562/events -> 204
-POST /turns/r-a562/events -> 204
-POST /turns/r-a562/events -> 204
-POST /turns/r-a562/events -> 204
-GET /turns/r-a562 -> 200
+POST /turns/r-ec1d/events -> 204
+POST /turns/r-ec1d/events -> 204
+POST /turns/r-ec1d/events -> 204
+POST /turns/r-ec1d/events -> 204
+POST /turns/r-ec1d/events -> 204
+POST /turns/r-ec1d/events -> 204
+POST /turns/r-ec1d/events -> 204
+POST /turns/r-ec1d/events -> 204
+POST /turns/r-ec1d/events -> 204
+GET /turns/r-ec1d -> 200
 POST /runs -> 202
-POST /turns/r-ab46/events -> 204
-POST /turns/r-ab46/events -> 204
-POST /turns/r-ab46/events -> 204
-POST /turns/r-ab46/events -> 204
-POST /turns/r-ab46/events -> 204
-POST /turns/r-ab46/events -> 204
-POST /turns/r-ab46/events -> 204
-POST /turns/r-ab46/events -> 204
-POST /turns/r-ab46/events -> 204
-POST /turns/r-ab46/events -> 204
-POST /turns/r-ab46/events -> 204
-POST /turns/r-ab46/events -> 204
-POST /turns/r-ab46/events -> 204
-POST /turns/r-ab46/events -> 204
-GET /turns/r-ab46/events -> 200
-GET /turns/r-ab46 -> 200
+POST /turns/r-373e/events -> 204
+POST /turns/r-373e/events -> 204
+POST /turns/r-373e/events -> 204
+POST /turns/r-373e/events -> 204
+POST /turns/r-373e/events -> 204
+POST /turns/r-373e/events -> 204
+POST /turns/r-373e/events -> 204
+POST /turns/r-373e/events -> 204
+POST /turns/r-373e/events -> 204
+POST /turns/r-373e/events -> 204
+POST /turns/r-373e/events -> 204
+POST /turns/r-373e/events -> 204
+POST /turns/r-373e/events -> 204
+GET /turns/r-373e/events -> 200
+POST /turns/r-373e/events -> 204
+GET /turns/r-373e -> 200
 POST /runs -> 202
-POST /turns/r-e0ee/events -> 204
-POST /turns/r-e0ee/events -> 204
-POST /turns/r-e0ee/events -> 204
-POST /turns/r-e0ee/events -> 204
-POST /turns/r-e0ee/events -> 204
-POST /turns/r-e0ee/events -> 204
-POST /turns/r-e0ee/events -> 204
-POST /turns/r-e0ee/events -> 204
-POST /turns/r-e0ee/events -> 204
-POST /turns/r-e0ee/events -> 204
-POST /turns/r-e0ee/events -> 204
-POST /turns/r-e0ee/events -> 204
-POST /turns/r-e0ee/events -> 204
-GET /turns/r-e0ee -> 200
+POST /turns/r-3991/events -> 204
+POST /turns/r-3991/events -> 204
+POST /turns/r-3991/events -> 204
+POST /turns/r-3991/events -> 204
+POST /turns/r-3991/events -> 204
+POST /turns/r-3991/events -> 204
+POST /turns/r-3991/events -> 204
+POST /turns/r-3991/events -> 204
+POST /turns/r-3991/events -> 204
+POST /turns/r-3991/events -> 204
+POST /turns/r-3991/events -> 204
+POST /turns/r-3991/events -> 204
+POST /turns/r-3991/events -> 204
+GET /turns/r-3991 -> 200
 POST /runs -> 202
-POST /turns/r-1e43/events -> 204
-POST /turns/r-1e43/events -> 204
-POST /turns/r-1e43/events -> 204
-POST /turns/r-1e43/events -> 204
-POST /turns/r-1e43/events -> 204
-POST /turns/r-1e43/events -> 204
-POST /turns/r-1e43/events -> 204
-POST /turns/r-1e43/events -> 204
-POST /turns/r-1e43/events -> 204
-POST /turns/r-1e43/events -> 204
-POST /turns/r-1e43/events -> 204
-POST /turns/r-1e43/events -> 204
-POST /turns/r-1e43/events -> 204
-POST /turns/r-1e43/events -> 204
-POST /turns/r-1e43/events -> 204
-POST /turns/r-1e43/events -> 204
-POST /turns/r-1e43/events -> 204
-POST /turns/r-1e43/events -> 204
-POST /turns/r-1e43/events -> 204
-POST /turns/r-1e43/events -> 204
-POST /turns/r-1e43/events -> 204
-POST /turns/r-1e43/events -> 204
-POST /turns/r-1e43/events -> 204
-POST /turns/r-1e43/events -> 204
-GET /turns/r-26e4 -> 200
-POST /turns/r-26e4/events -> 204
-POST /turns/r-26e4/events -> 204
-POST /turns/r-26e4/events -> 204
-POST /turns/r-26e4/events -> 204
-POST /turns/r-26e4/events -> 204
-POST /turns/r-26e4/events -> 204
-POST /turns/r-26e4/events -> 204
-POST /turns/r-26e4/events -> 204
-POST /turns/r-26e4/events -> 204
-POST /turns/r-26e4/events -> 204
-POST /turns/r-26e4/events -> 204
-POST /turns/r-26e4/events -> 204
-POST /turns/r-26e4/events -> 204
-POST /turns/r-26e4/events -> 204
-POST /turns/r-26e4/events -> 204
-POST /turns/r-26e4/events -> 204
-POST /turns/r-26e4/events -> 204
-GET /turns/r-26e4 -> 200
+POST /turns/r-f68e/events -> 204
+POST /turns/r-f68e/events -> 204
+POST /turns/r-f68e/events -> 204
+POST /turns/r-f68e/events -> 204
+POST /turns/r-f68e/events -> 204
+POST /turns/r-f68e/events -> 204
+POST /turns/r-f68e/events -> 204
+POST /turns/r-f68e/events -> 204
+POST /turns/r-f68e/events -> 204
+POST /turns/r-f68e/events -> 204
+POST /turns/r-f68e/events -> 204
+POST /turns/r-f68e/events -> 204
+POST /turns/r-f68e/events -> 204
+POST /turns/r-f68e/events -> 204
+POST /turns/r-f68e/events -> 204
+POST /turns/r-f68e/events -> 204
+POST /turns/r-f68e/events -> 204
+POST /turns/r-f68e/events -> 204
+POST /turns/r-f68e/events -> 204
+POST /turns/r-f68e/events -> 204
+POST /turns/r-f68e/events -> 204
+POST /turns/r-f68e/events -> 204
+POST /turns/r-f68e/events -> 204
+POST /turns/r-f68e/events -> 204
+POST /runs -> 202
+POST /turns/r-6e0d/events -> 204
+POST /turns/r-6e0d/events -> 204
+POST /turns/r-6e0d/events -> 204
+POST /turns/r-6e0d/events -> 204
+POST /turns/r-6e0d/events -> 204
+POST /turns/r-6e0d/events -> 204
+POST /turns/r-6e0d/events -> 204
+POST /turns/r-6e0d/events -> 204
+POST /turns/r-6e0d/events -> 204
+POST /turns/r-6e0d/events -> 204
+POST /turns/r-6e0d/events -> 204
+POST /turns/r-6e0d/events -> 204
+POST /turns/r-6e0d/events -> 204
+POST /turns/r-6e0d/events -> 204
+POST /turns/r-6e0d/events -> 204
+POST /turns/r-6e0d/events -> 204
+POST /turns/r-6e0d/events -> 204
+POST /turns/r-6e0d/events -> 204
+POST /turns/r-6e0d/events -> 204
+POST /turns/r-6e0d/events -> 204
+POST /turns/r-6e0d/events -> 204
+POST /turns/r-6e0d/events -> 204
+POST /turns/r-6e0d/events -> 204
+POST /turns/r-6e0d/events -> 204
+POST /turns/r-6e0d/events -> 204
+POST /turns/r-6e0d/events -> 204
+POST /turns/r-6e0d/events -> 204
+POST /turns/r-6e0d/events -> 204
+POST /turns/r-6e0d/events -> 204
+POST /turns/r-6e0d/events -> 204
+POST /turns/r-6e0d/events -> 204
+POST /turns/r-6e0d/events -> 204
+POST /turns/r-6e0d/events -> 204
+POST /turns/r-6e0d/events -> 204
+POST /turns/r-6e0d/events -> 204
+POST /turns/r-6e0d/events -> 204
+POST /turns/r-6e0d/events -> 204
+POST /turns/r-6e0d/events -> 204
+POST /turns/r-6e0d/events -> 204
+POST /turns/r-6e0d/events -> 204
+POST /turns/r-6e0d/events -> 204
+POST /turns/r-6e0d/events -> 204
+POST /turns/r-6e0d/events -> 204
+POST /turns/r-6e0d/events -> 204
+POST /turns/r-6e0d/events -> 204
+POST /turns/r-6e0d/events -> 204
+POST /turns/r-6e0d/events -> 204
+POST /turns/r-6e0d/events -> 204
+POST /turns/r-6e0d/events -> 204
+POST /turns/r-6e0d/events -> 204
+POST /turns/r-6e0d/events -> 204
+GET /turns/r-6e0d -> 200
+POST /runs -> 202
+POST /turns/r-3cd6/events -> 204
+POST /turns/r-3cd6/events -> 204
+POST /turns/r-3cd6/events -> 204
+POST /turns/r-3cd6/events -> 204
+POST /turns/r-3cd6/events -> 204
+POST /turns/r-3cd6/events -> 204
+POST /turns/r-3cd6/events -> 204
+POST /turns/r-3cd6/events -> 204
+POST /turns/r-3cd6/events -> 204
+POST /turns/r-3cd6/events -> 204
+POST /turns/r-3cd6/events -> 204
+POST /turns/r-3cd6/events -> 204
+POST /turns/r-3cd6/events -> 204
+POST /turns/r-3cd6/events -> 204
+GET /turns/r-3cd6 -> 200
+GET /turns/r-9329 -> 200
+POST /turns/r-9329/events -> 204
+POST /turns/r-9329/events -> 204
+POST /turns/r-9329/events -> 204
+POST /turns/r-9329/events -> 204
+POST /turns/r-9329/events -> 204
+POST /turns/r-9329/events -> 204
+POST /turns/r-9329/events -> 204
+POST /turns/r-9329/events -> 204
+POST /turns/r-9329/events -> 204
+POST /turns/r-9329/events -> 204
+POST /turns/r-9329/events -> 204
+POST /turns/r-9329/events -> 204
+POST /turns/r-9329/events -> 204
+POST /turns/r-9329/events -> 204
+POST /turns/r-9329/events -> 204
+POST /turns/r-9329/events -> 204
+POST /turns/r-9329/events -> 204
+GET /turns/r-9329 -> 200
 POST /evals -> 200
 (server stopped)
 
 === the CLI that remains: serve, worker, submit, eval, replay ===
 (serve, worker and submit ran above; replay prints a turn's stored rows, a child loop's indented; eval prints the table POST /evals returns)
-$ java --enable-native-access=ALL-UNNAMED -cp "target/classes:target/lib/*" harness.cli.Main replay r-26e4
+$ java --enable-native-access=ALL-UNNAMED -cp "target/classes:target/lib/*" harness.cli.Main replay r-9329
   1  LLM   pass 1 -> ToolCall[toolName=order_status, input={orderId=ORD-1}]  [OK 2 ms]
   2  TOOL  order_status {orderId=ORD-1} -> Order ORD-1: SHIPPED, shipment SHP-1  [OK 0 ms]
   3  NOTE  resumed from step 2  [OK 0 ms]
   4  LLM   pass 2 -> ToolCall[toolName=shipping_status, input={shipmentId=SHP-1}]  [OK 1 ms]
   5  TOOL  shipping_status {shipmentId=SHP-1} -> Shipment SHP-1: IN TRANSIT, arriving 2026-10-16  [OK 0 ms]
   6  LLM   pass 3 -> Done[]  [OK 0 ms]
-$ java --enable-native-access=ALL-UNNAMED -cp "target/classes:target/lib/*" harness.cli.Main replay r-e0ee
+$ java --enable-native-access=ALL-UNNAMED -cp "target/classes:target/lib/*" harness.cli.Main replay r-3991
   1  LLM   pass 1 -> ToolCall[toolName=ask_logistics, input={goal=Where is shipment SHP-1 for my order?}]  [OK 2 ms]
     2  LLM   pass 1 -> ToolCall[toolName=shipping_status, input={shipmentId=SHP-1}]  [OK 0 ms]
     3  TOOL  shipping_status {shipmentId=SHP-1} -> Shipment SHP-1: IN TRANSIT, arriving 2026-10-16  [OK 0 ms]
     4  LLM   pass 2 -> Done[]  [OK 0 ms]
-  5  AGENT  ask_logistics {goal=Where is shipment SHP-1 for my order?} -> Shipment SHP-1: IN TRANSIT, arriving 2026-10-16  [OK 10 ms]
+  5  AGENT  ask_logistics {goal=Where is shipment SHP-1 for my order?} -> Shipment SHP-1: IN TRANSIT, arriving 2026-10-16  [OK 9 ms]
   6  LLM   pass 2 -> Done[]  [OK 0 ms]
 $ java --enable-native-access=ALL-UNNAMED -cp "target/classes:target/lib/*" harness.cli.Main eval
- 1  PASS  support    What is the status of order ORD-1?                      ran order_status,shipping_status  3 passes     12 ms
+ 1  PASS  support    What is the status of order ORD-1?                      ran order_status,shipping_status  3 passes     11 ms
  2  PASS  support    Where is my shipment SHP-1?                             ran shipping_status              2 passes      0 ms
  3  PASS  support    Is product PRD-2 available?                             ran stock_status                 2 passes      0 ms
  4  PASS  support    What is the status of order ORD-99?                     ran order_status                 2 passes      0 ms
  5  PASS  support    What is the weather today?                              ran no tool                      1 pass       0 ms
- 6  PASS  chaos      Please hang while checking ORD-1                        ran hang_forever                 2 passes   1006 ms
+ 6  PASS  chaos      Please hang while checking ORD-1                        ran hang_forever                 2 passes   1009 ms
  7  PASS  chaos      boom                                                    ran throw_boom                   2 passes      0 ms
- 8  PASS  support    Status of order ORD-2 and is product PRD-1 available?   ran order_status,stock_status    2 passes      2 ms
+ 8  PASS  support    Status of order ORD-2 and is product PRD-1 available?   ran order_status,stock_status    2 passes      5 ms
  9  PASS  inventory  How many PRD-1 do we have in stock?                     ran stock_status                 2 passes      0 ms
 10  PASS  inventory  refund order ORD-1                                      ran no tool                      1 pass       0 ms
 11  FAIL  support    reorder ORD-1                                           ran order_status,shipping_status  3 passes      0 ms  tool_choice: expected [] got [order_status, shipping_status]; answer: expected "No tool" got "Order ORD-1: SHIPPED, shipment SHP-1 | Shipment SHP-1: IN TRANSIT, arriving 2026-10-16"

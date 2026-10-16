@@ -10,7 +10,7 @@ One page that ties the pages together, in the order they were built: what was bu
 
 ![the whiteboard from the live round](docs/v1-whiteboard.png)
 
-- The brief: `run(goal)`, a loop that hands the state to a model, runs the tool it asks for, feeds the result back, stops when the model says done; a stub model, no network. Then six follow-ups: durable runs, sub-agents, parallel tool calls, measuring the harness, routing across providers, sandboxing. Five of the six have a page below; sandboxing is a short section at the end, since v2 has only its first level.
+- The brief: `run(goal)`, a loop that hands the state to a model, runs the tool it asks for, feeds the result back, stops when the model says done; a stub model, no network. Then six follow-ups: durable runs, sub-agents, parallel tool calls, measuring the harness, routing across providers, sandboxing. Each of the six has a page below.
 - What I drew and built in the hour: Orchestrator owns the loop; LLMProxy is the stub; ToolCaller and ToolRegistry run and hold the tools; Conversation, Turn, Span and Context are the state; a Summarizer relays the answer. One process, one question, one tool, done.
 - What it could not do, and the follow-ups were about: a turn died with the process; nothing streamed; one tool at a time; no agent inside an agent; no way to say whether the loop did its job; the answer was the last tool's output.
 - `v1/` is that code, frozen at tag `v1`, with its own [README](v1/README.md).
@@ -88,13 +88,13 @@ Page: [docs/ROUTING.md](docs/ROUTING.md)
 
 ## 10 · Sandboxing tools
 
-Design, from production; v2 has the first level and the gate.
+Page: [docs/SANDBOX.md](docs/SANDBOX.md)
 
-- A tool runs where the harness binds it, and the question is how much of the harness it can reach. Four levels, each a step away from the loop: an adapter in the loop's process; a separate process with limits on time, memory and the file system; a container per task, thrown away after; a remote sandbox the harness only talks to.
-- What picks the level is what the tool does. A lookup against a service needs none of this. A tool that runs code the model wrote needs the container, every time.
-- Whatever the level, the tool acts as the user, not as the platform: the user's own credentials, scoped to the call, never a platform key. The agent's tool list is the first gate; the credentials are the second.
-- v2: every tool is an adapter in the loop's process, under the agent's clock and tool list; the first level and the gate, proven on [the features page](docs/V2_FEATURES.md).
-- What I ran, on my platform in production: tools calling the business systems as the user, with the user's own credentials passed through and scoped to the call. A container per task for code-running tools is what I built as a proof of concept, headless, with approvals pre-gated; it is the level I would ship next for any tool that executes what a model wrote.
+- The ask, in the brief's words: sandboxing tool execution "so a misbehaving tool can't reach the rest of the system". The rest of the system is the worker's process and memory, the store, the keys in the worker's environment, and the network.
+- For our own code calling known services, the clock and the gate are enough, and v2 had them: a hang is cut off, a throw is an ERROR row, a tool outside the agent's list is DENIED. For a tool that runs code it did not write, the model's or a third party's, v2 now has a `container` tool type: every call runs in a new container with no network, a read-only root, caps, no secrets, removed after; the clock kills it by name. One more branch in the loader, nothing else in the loop.
+- The demo's sandbox agent runs it: three tools try to read the secret, call out and write to the disk, each in a box of its own; the first finds no secret and says so, an OK row; the network and the disk refuse, two ERROR rows with the exit code; one that hangs is killed at the clock; one does honest work and returns. Without Docker the section is skipped and everything else runs.
+- Design, for production: the box is a Kubernetes pod from a warm pool, on a node pool with no secrets, owned by a runner service the worker calls over HTTP; a microVM when many tenants' code shares hosts. At every strength the tool acts as the user, with the user's own token scoped to the call.
+- What I ran on my platform: in production, tools calling the business systems as the user; as a proof of concept, a container runtime for a coding agent, the same shape as this.
 
 ## 11 · The picture at the end
 
@@ -106,5 +106,6 @@ Three diagrams, in the order the pages added them, are the harness at scale: [th
 2. The Redis Stream per job id in place of the in-memory stream, and SQS with its dead-letter queue in place of the queue table.
 3. The tool catalog, the index and the search tool.
 4. The governor in front of the model.
-5. The DAG on a workflow engine for the sequences that are known up front.
-6. A real model behind the interface, with tokens and cached tokens as columns in the eval.
+5. The runner service with a warm pool of sandbox pods in place of the `docker` command on the worker.
+6. The DAG on a workflow engine for the sequences that are known up front.
+7. A real model behind the interface, with tokens and cached tokens as columns in the eval.

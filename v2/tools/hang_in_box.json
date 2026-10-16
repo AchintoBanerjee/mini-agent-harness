@@ -1,0 +1,3 @@
+{ "name": "hang_in_box", "description": "Sleeps for a minute inside the sandbox: the runaway, killed at the clock", "type": "container",
+  "match": { "keywords": ["hang"] },
+  "command": "sleep 60" }

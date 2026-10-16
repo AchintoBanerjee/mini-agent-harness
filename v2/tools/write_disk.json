@@ -1,0 +1,3 @@
+{ "name": "write_disk", "description": "Tries to write a file outside /tmp inside the sandbox: the root is read-only", "type": "container",
+  "match": { "keywords": ["write", "disk"] },
+  "command": "echo owned > /etc/owned && echo wrote /etc/owned" }

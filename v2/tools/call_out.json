@@ -1,0 +1,3 @@
+{ "name": "call_out", "description": "Tries to reach an address on the network from inside the sandbox: there is no network", "type": "container",
+  "match": { "keywords": ["call out", "network"] },
+  "command": "wget -q -T 2 -O - http://1.1.1.1/ && echo fetched 1.1.1.1" }

@@ -16,14 +16,16 @@ import java.util.List;
 import java.util.Map;
 import java.util.TreeMap;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ThreadLocalRandom;
 import java.util.function.Function;
 import java.util.regex.Pattern;
 
 /**
  * Reads tools/*.json. A tool is data: the "type" field picks the adapter that builds its
- * handler (lookup: a static map; sleep: an interruptible sleep; fail: throws; agent:
- * another agent, named by "agent" and read from agents/, run as a tool by the loop that
- * offers it). Adding a tool means adding a file.
+ * handler (lookup: a static map; sleep: an interruptible sleep; fail: throws; container:
+ * a command run in a throwaway container, the sandbox; agent: another agent, named by
+ * "agent" and read from agents/, run as a tool by the loop that offers it). Adding a tool
+ * means adding a file.
  */
 public class ToolLoader {
 
@@ -37,6 +39,9 @@ public class ToolLoader {
 
     /** --slow: every lookup sleeps this long before answering, so overlap shows (latency simulated). */
     public static volatile long SLOW_LOOKUP_MS = 0;
+
+    /** The sandbox every container tool runs in: the docker command on this machine. */
+    private static final ContainerRunner CONTAINERS = new ContainerRunner();
 
     /** "order_status=2, stock_status=1" in name order, or "none". */
     public static String handlerCalls() {
@@ -77,6 +82,8 @@ public class ToolLoader {
             handler = sleep(required(node, "ms", file).asLong());
         } else if (type.equals("fail")) {
             handler = fail(required(node, "message", file).asText());
+        } else if (type.equals("container")) {
+            handler = container(node, name, inputField, file);
         } else if (type.equals("agent")) {
             return new Tool(name, description, type, inputField == null ? "goal" : inputField, matching,
                     childAgent(node, file), notInsideATurn(name));
@@ -144,6 +151,25 @@ public class ToolLoader {
                 throw new IllegalStateException("interrupted while sleeping " + ms + " ms");
             }
             return "slept " + ms + " ms";
+        };
+    }
+
+    /**
+     * A container tool: "command" runs under sh -c in a new container from "image" (alpine
+     * unless the file says otherwise), the tool's input as $1. Each call gets a container
+     * of its own, named after the tool, and the runner removes it by that name at the clock.
+     */
+    private static Function<Map<String, String>, String> container(JsonNode node, String name, String inputField, Path file) {
+        String image = node.has("image") ? node.get("image").asText() : ContainerRunner.DEFAULT_IMAGE;
+        String command = required(node, "command", file).asText();
+        if (!name.matches("[a-zA-Z0-9][a-zA-Z0-9_.-]*")) {
+            throw new IllegalArgumentException(file + ": container tool name \"" + name + "\" must match [a-zA-Z0-9][a-zA-Z0-9_.-]*, it names the container");
+        }
+        return input -> {
+            HANDLER_CALLS.merge(name, 1, Integer::sum);
+            List<String> args = inputField == null ? List.of() : List.of(input.getOrDefault(inputField, ""));
+            String containerName = "harness-" + name + "-" + Long.toHexString(ThreadLocalRandom.current().nextLong() & 0xffffffffL);
+            return CONTAINERS.run(image, command, args, containerName);
         };
     }
 
