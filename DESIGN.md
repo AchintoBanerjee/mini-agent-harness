@@ -4,7 +4,7 @@ I built an agent platform that thousands of customers use in production, and hav
 
 One page that ties the pages together, in the order they were built: what was built live, what v2 adds, then the deep dives. Read this for the story, each page for the depth, `./demo.sh` for the proof (`docs/demo-output.txt` is its saved output). The brief is [PROBLEM.md](PROBLEM.md).
 
-[1 · v1](#1--v1-what-i-built-live) · [2 · v2 HLD](#2--v2-the-harness-as-a-small-service) · [3 · Additional features](#3--v2-additional-features) · [4 · Durability](#4--durability) · [5 · Scaling](#5--scaling) · [6 · Performance](#6--performance) · [7 · Sub-agents](#7--sub-agents) · [8 · Measuring](#8--measuring-the-harness) · [9 · Routing across providers](#9--routing-across-providers) · [10 · Sandboxing tools](#10--sandboxing-tools) · [11 · The picture at the end](#11--the-picture-at-the-end) · [12 · Next](#12--what-i-would-build-next-in-order)
+[1 · v1](#1--v1-what-i-built-live) · [2 · v2 HLD](#2--v2-the-harness-as-a-small-service) · [3 · Additional features](#3--v2-additional-features) · [4 · Durability](#4--durability) · [5 · Scaling](#5--scaling) · [6 · Performance](#6--performance) · [7 · Sub-agents](#7--sub-agents) · [8 · Measuring](#8--measuring-the-harness) · [9 · Routing across providers](#9--routing-across-providers) · [10 · Sandboxing tools](#10--sandboxing-tools) · [11 · Next](#11--what-i-would-build-next-in-order)
 
 ## 1 · v1: what I built live
 
@@ -95,13 +95,7 @@ Page: [docs/SANDBOX.md](docs/SANDBOX.md)
 - The demo proves it: a tool looks for the secret and finds none, one calls out and has no network, one writes and the disk is read-only, one hangs and is killed. Skipped without Docker.
 - Design, for production: the worker calls a runner service that owns the boxes, a pod per call, on nodes with no secrets; the tool acts as the user. What I ran: tools as the user in production, and a container runtime for a coding agent with the same walls, where the container is kept and reset between tasks.
 
-## 11 · The picture at the end
-
-![the harness at scale](docs/harness-at-scale.svg)
-
-Every page's piece on the v2 spine. Blue is built in v2, with the stand-in named where one stands in for the production piece; beige is design, from my platform; orange is the one multi-tenant service in front of shared GPUs.
-
-## 12 · What I would build next, in order
+## 11 · What I would build next, in order
 
 1. The live loop of the eval: a sampled judge on a schedule, rates per agent version, a confirmed failure back into the golden set.
 2. The Redis Stream per job id in place of the in-memory stream, and SQS with its dead-letter queue in place of the queue table.
