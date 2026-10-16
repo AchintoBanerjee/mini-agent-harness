@@ -97,7 +97,9 @@ Page: [docs/SANDBOX.md](docs/SANDBOX.md)
 
 ## 11 · The picture at the end
 
-Three diagrams, in the order the pages added them, are the harness at scale: [the split and the queue](docs/durability.svg), [the stream across pods](docs/scaling-stream.svg), [the governor in front of the GPU](docs/scaling-gpu.svg). Everything built in v2 keeps its seam in that picture: the API layer, the loop in the worker, the run's stream, the store, the LLM proxy, the tool registry.
+![the harness at scale](docs/harness-at-scale.svg)
+
+Every page's piece on the v2 spine. Blue is built in v2, with the stand-in named where one stands in for the production piece; beige is design, from my platform; orange is the one multi-tenant service in front of shared GPUs.
 
 ## 12 · What I would build next, in order
 
