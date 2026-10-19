@@ -41,7 +41,7 @@ Page: [docs/DURABILITY.md](docs/DURABILITY.md)
 - A dead worker's message comes back by itself; the next worker loads the saved rows and continues, mid-chain, without asking the model again for a decision it has.
 - The contract: a saved step runs once; the one call in flight at the crash runs at least once; so a tool that writes is idempotent on the key the harness gives it.
 - Temporal, a workflow engine, is the step up from the queue: the same contract, with the bookkeeping done for you. I never evaluated it. What is scoped here keeps that contract, so it would carry over.
-- What the POC runs: one build, two processes on one laptop, one SQLite file, the queue table standing in for SQS. Not containers.
+- What the POC runs: one build, two processes on one laptop, one SQLite file, the queue table standing in for SQS. Not containers. One known gap: the lease is enforced at the handout, not at write time, so a worker that stalls past its lease can still write when it wakes; the fence is on [the follow-up page](docs/FOLLOW_UP.md).
 
 ## 5 · Scaling
 
@@ -96,6 +96,8 @@ Page: [docs/SANDBOX.md](docs/SANDBOX.md)
 - Design, for production: the worker calls a runner service that owns the boxes, a pod per call, on nodes with no secrets; the tool acts as the user. What I ran: tools as the user in production, and a container runtime for a coding agent with the same walls, where the container is kept and reset between tasks.
 
 ## 11 · What I would build next, in order
+
+Three questions came back after the review, on untrusted content, lease fencing, and the turn at 150k tokens with tenancy; the answers are on [docs/FOLLOW_UP.md](docs/FOLLOW_UP.md).
 
 1. The live loop of the eval: a sampled judge on a schedule, rates per agent version, a confirmed failure back into the golden set.
 2. The Redis Stream per job id in place of the in-memory stream, and SQS with its dead-letter queue in place of the queue table.

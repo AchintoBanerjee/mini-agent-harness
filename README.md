@@ -49,7 +49,7 @@ To run commands by hand, see [v2/README.md](v2/README.md). Everything runs from 
 ```
 PROBLEM.md          the brief, in my words
 DESIGN.md           the write-up that ties the pages together
-docs/               the pages, the diagrams, the saved demo output, the live round's whiteboard
+docs/               the pages, the diagrams, the saved demo output, the live round's whiteboard; FOLLOW_UP.md answers three questions that came back after the review
 demo.sh             compiles v2 and runs the whole story
 AGENTS.md           how to build, test and run, for a coding assistant
 v1/                 the live-round harness, frozen (tag v1)
