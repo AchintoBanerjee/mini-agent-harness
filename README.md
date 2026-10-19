@@ -47,7 +47,7 @@ To run commands by hand, see [v2/README.md](v2/README.md). Everything runs from 
 ## Layout
 
 ```
-PROBLEM.md          the brief, verbatim
+PROBLEM.md          the brief, in my words
 DESIGN.md           the write-up that ties the pages together
 docs/               the pages, the diagrams, the saved demo output, the live round's whiteboard
 demo.sh             compiles v2 and runs the whole story
