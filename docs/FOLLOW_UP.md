@@ -117,7 +117,8 @@ Nothing is lost
 - Tool calls are cheap, and for a read that is the point: if the model needs the stock level again it just calls the tool again and gets fresh data, which is better than a stale copy in the prompt anyway. That is why read results can drop out at compaction.
 - State changes are the opposite, a refund must never be made again. So for those the summary keeps the tool call id and the turn id that did it, with the result: refund_order(ORD-1) = REFUNDED 12.00, run 9 in turn 2. The agent can look it up and see exactly what happened, and the harness checks the stored rows before it runs a write again, so even a model that forgot could not refund twice.
 - Everything stays in the store exactly as written: every turn, every tool call with its inputs and full result, every answer. Compaction only changes what goes into the prompt.
-- The agent always has native tools to get at it, in every agent's tool list without the admin doing anything: a tool run by its id, a turn by its number, a search of the conversation by text. A RAG over the transcript, except that most of it is an exact lookup by id rather than a semantic search. The model knows which to use because the system prompt says it once and the summary says it at the point of use: results were folded, the pointer is the run id, call the tool again for current data, fetch the run for what it returned then.
+- The harness gives every agent three lookup tools, always: get a tool run by its id, get a turn by its number, search the conversation by text. So anything folded out of the prompt is one call away.
+- The system prompt tells the model the rule once: older results were folded and the pointer is the run id; call the tool again if you need current data, fetch the run if you need what it returned then.
 - So a gap in the summary is a lookup, not a loss.
 
 Where the prefix cache breaks
