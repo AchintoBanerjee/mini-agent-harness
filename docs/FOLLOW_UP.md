@@ -158,7 +158,7 @@ The stamps
 
 Audit and retention
 - Nothing we invented. The agent definition, its versions, the tools and the MCP servers are ordinary business objects, and the platform audits every create, update and delete on every business object as standard: who, what, before, after, when. "Who gave this agent the refund tool" is a lookup.
-- Retention follows the tenant's contract and applies to the text of the rows. The metrics, ids, tokens, latency, status, carry no customer text and are kept longer for the fleet-wide view.
+- Retention: the conversation rows, the turns and the tool results, move out of the database into object storage after a configurable period, three months, by a job, so the live tables stay small while the history stays reachable. The archive is deleted when the tenant's contract says. The numbers, tokens, latency, status, ids, carry no customer text, so they are kept longer for the fleet-wide trends.
 
 The schema
 - Tenant and user are not tables of ours. The tenant is the deployment; its id is a column in the two shared stores. Users and their roles, admin, builder, user, come from the identity provider; the platform reads the role off the caller's token.
