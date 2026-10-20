@@ -130,7 +130,6 @@ Where the prefix cache breaks
 How I would know it hurt correctness
 - This is an eval question. The golden set runs with compaction on and off, and the check is simply whether the agent still answers correctly and still picks the right tools once compaction has happened in the middle of a conversation.
 - It runs on the live agents the teams ship, on recorded real conversations that actually reach the budget, not only on synthetic cases; a synthetic case rarely gets long enough to compact.
-- Two more things to compare, because they are what compaction gets wrong first: identifier corruption, an id in the summary that no longer matches the original; and the re-fetch rate, how often the agent calls a tool again for something that was folded, the cost of the policy in calls.
 - Alongside correctness we measure token usage and the cache hit rate per call, with cached tokens as a column next to cost. The hit rate dips on the compaction call; that is expected and by design. What is not expected is a dip on every call, which means the ordering broke, and the column shows it as money before anyone reads a transcript.
 
 ---
